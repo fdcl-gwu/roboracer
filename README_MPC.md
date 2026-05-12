@@ -1,0 +1,173 @@
+# RoboRacer MPC Racing
+
+Nonlinear MPC controller for the RoboRacer platform using [acados](https://github.com/acados/acados) and CasADi.
+Mirrors `mppi_racing.py` in structure — same Vicon interface, same serial protocol, same lap counting — with the MPPI solver replaced by a deterministic SQP-RTI solver.
+
+See [README.md](README.md) for the hardware setup procedure (Vicon, serial, car power-on). This document covers only the MPC-specific software dependencies and tuning.
+
+---
+
+## How it differs from MPPI
+
+| | `mppi_racing.py` | `mpc_racing.py` |
+|---|---|---|
+| Algorithm | Stochastic sampling (300 rollouts) | Deterministic NMPC, SQP-RTI |
+| Dynamics | Forward Euler + velocity clipping | Continuous ODE integrated with ERK4 |
+| Velocity bound | Clipped in state update | Inequality constraint `0 ≤ v ≤ 15 m/s` |
+| Warm start | Explicit `working_sequence` array | acados warm-starts internally |
+| Startup cost | None | ~30 s C-code compilation on first run |
+| `--rollouts` | Present | Not applicable, removed |
+| `--mpc-dt` | Not present | Prediction step size (s) |
+
+---
+
+## Additional dependencies
+
+`mpc_racing.py` needs two libraries beyond what `mppi_racing.py` requires:
+
+- **CasADi** — symbolic math for defining the bicycle model ODE
+- **acados** — fast NMPC solver; builds a C library that is called from Python
+
+### 1. Install CasADi
+
+```bash
+pip3 install casadi
+```
+
+### 2. Build and install acados
+
+acados must be built from source. It pulls in HPIPM (QP solver) as a submodule.
+
+```bash
+# System dependencies
+sudo apt-get install -y cmake g++ libblas-dev liblapack-dev
+
+# Clone acados
+git clone https://github.com/acados/acados.git
+cd acados
+git submodule update --recursive --init
+
+# Build
+mkdir -p build && cd build
+cmake -DACADOS_WITH_QPOASES=ON ..
+make install -j$(nproc)
+cd ../..
+```
+
+After building, acados installs headers and shared libraries under `acados/lib/` and `acados/include/`. The Python template needs to know this path.
+
+### 3. Install the acados Python template
+
+```bash
+pip3 install acados/interfaces/acados_template
+```
+
+### 4. Set the required environment variable
+
+`acados_template` needs `ACADOS_SOURCE_DIR` to find the compiled C library at code-generation time. Add this to your shell profile (e.g. `~/.bashrc`):
+
+```bash
+export ACADOS_SOURCE_DIR=/absolute/path/to/acados
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ACADOS_SOURCE_DIR/lib
+```
+
+Then reload:
+
+```bash
+source ~/.bashrc
+```
+
+Verify:
+
+```bash
+python3 -c "from acados_template import AcadosOcp; print('acados OK')"
+```
+
+---
+
+## Generated files
+
+On the **first run**, `mpc_racing.py` calls acados to generate C code, compile it into a shared library, and store the result. This takes roughly 30 seconds and produces two artefacts in the working directory:
+
+```
+roboracer_mpc.json       # serialised OCP definition
+c_generated_code/        # generated C solver code and compiled .so
+```
+
+On subsequent runs the same compiled solver is reused and startup is fast. If you change any MPC parameters (horizon, dt, cost weights) you must delete `c_generated_code/` and `roboracer_mpc.json` so the solver is regenerated:
+
+```bash
+rm -rf c_generated_code/ roboracer_mpc.json
+```
+
+---
+
+## Usage
+
+```
+python3 mpc_racing.py [options]
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--raceline PATH` | `raceline.csv` | Path to raceline CSV |
+| `--port PORT` | `/dev/ttyUSB0` | Serial port to car |
+| `--laps N` | `1` | Laps before stopping; `0` = run forever |
+| `--yaw-correction F` | `0.3` | Yaw offset added to Vicon heading (rad) |
+| `--speed-gain F` | `20.0` | Feedforward throttle gain (`throttle_ff = gain × v_ref`) |
+| `--speed-kp F` | `5.0` | Proportional gain on speed error |
+| `--max-throttle N` | `200` | Maximum throttle command (hard cap) |
+| `--horizon N` | `20` | MPC horizon steps |
+| `--mpc-dt F` | `0.05` | Prediction step size in seconds (horizon time = N × dt) |
+| `--subject NAME` | `UGV` | Vicon subject name |
+| `--server IP` | `192.168.10.1` | Vicon server IP |
+
+### Example
+
+```bash
+# First run — allow time for solver compilation
+python3 mpc_racing.py --laps 1 --max-throttle 80
+
+# Subsequent runs with a different raceline (same horizon/dt — no recompile needed)
+python3 mpc_racing.py --raceline fast_line.csv --laps 3 --max-throttle 120
+```
+
+---
+
+## First-time tuning
+
+The throttle control and yaw correction work identically to `mppi_racing.py`. Follow steps 1–4 of the [first-time tuning section in README.md](README.md#first-time-tuning) before touching the MPC parameters.
+
+### MPC-specific parameters
+
+**`--horizon` and `--mpc-dt`**
+
+The total prediction horizon is `N × dt` seconds. The default (20 × 0.05 s = 1 s) means the solver looks 1 second ahead. At 4 m/s this covers ~4 m of track — enough for the corners in `raceline.csv`. For faster speeds or tighter corners, increase `--horizon` or decrease `--mpc-dt`.
+
+Note that changing either of these requires deleting the cached solver (see [Generated files](#generated-files)).
+
+**Cost weights** (`W_CTE`, `W_HEADING`, `W_SPEED`, `W_STEER`, `W_ACCEL` in source)
+
+These are not currently exposed as CLI arguments because changing them requires recompiling the solver. Edit them directly at the top of `mpc_racing.py`, then delete `c_generated_code/` and `roboracer_mpc.json` before running.
+
+| Weight | Default | Effect of increasing |
+|---|---|---|
+| `W_CTE` | 5.0 | Tighter lateral tracking; may increase steering oscillation |
+| `W_HEADING` | 2.0 | Faster heading correction; may cause overshoot |
+| `W_SPEED` | 1.0 | Closer speed tracking; interacts with throttle P-controller |
+| `W_STEER` | 5.0 | Smoother steering; may widen the racing line |
+| `W_ACCEL` | 0.1 | Penalises aggressive acceleration commands |
+
+**Solver status warnings**
+
+The SQP-RTI solver returns a status code each step. Status `0` is a clean solve; status `2` (max iterations) is printed as a warning but is normal during hard cornering — the warm-started solution is still used. Persistent status `2` or other non-zero codes indicate the solver is struggling and the horizon or weights should be adjusted.
+
+**Real-time performance**
+
+On a Jetson, a 20-step horizon with ERK4 integration and HPIPM as the QP solver should solve in well under 10 ms, leaving headroom within the 25 ms control loop. If solve times exceed ~20 ms (printed if you add timing instrumentation), reduce `--horizon` first.
+
+---
+
+## Emergency stop
+
+Identical to `mppi_racing.py`: the `finally` block always sends a zero-throttle, centred-steering packet before closing the serial port, regardless of how the script exits.
