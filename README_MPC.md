@@ -3,8 +3,6 @@
 Nonlinear MPC controller for the RoboRacer platform using [acados](https://github.com/acados/acados) and CasADi.
 Mirrors `mppi_racing.py` in structure — same Vicon interface, same serial protocol, same lap counting — with the MPPI solver replaced by a deterministic SQP-RTI solver.
 
-See [README.md](README.md) for the hardware setup procedure (Vicon, serial, car power-on). This document covers only the MPC-specific software dependencies and tuning.
-
 ---
 
 ## How it differs from MPPI
@@ -18,6 +16,45 @@ See [README.md](README.md) for the hardware setup procedure (Vicon, serial, car 
 | Startup cost | None | ~30 s C-code compilation on first run |
 | `--rollouts` | Present | Not applicable, removed |
 | `--mpc-dt` | Not present | Prediction step size (s) |
+
+---
+
+## Hardware setup (Vicon + car)
+
+### 1. Power on and connect to the Vicon system
+
+- Connect to NETGEAR74 with associated password (ask Maneesh or Mark)
+- Turn on the three Vicon boxes
+- Log in to the Vicon PC and open Vicon Tracker 4.4
+- Wait for Vicon camera rings to turn blue
+
+### 2. Create or verify the Vicon subject
+
+- Make sure the car is inside the Vicon field with the tracking markers attached and oriented correctly
+- Ensure that the car shows up on the Vicon tracking screen labeled as UGV
+    - If it is not called UGV, you will need to change the associated label before running the test scripts
+
+### 3. Connect the car
+
+- Plug the car's battery in and ensure that the SiK radios are connected
+- The light will stay solid blue if the radios are connected
+
+### 4. Verify Vicon tracking before driving
+
+Run a quick sanity check to confirm position and heading data are being received before sending any commands to the car:
+
+```bash
+python3 -c "
+import vicon_tracker, time
+v = vicon_tracker.vicon()
+v.open('UGV@192.168.10.1')
+for _ in range(10):
+    x_v, R_vm = v.loop()
+    print('pos:', x_v)
+    time.sleep(0.1)
+v.close()
+"
+```
 
 ---
 
@@ -136,7 +173,29 @@ python3 mpc_racing.py --raceline fast_line.csv --laps 3 --max-throttle 120
 
 ## First-time tuning
 
-The throttle control and yaw correction work identically to `mppi_racing.py`. Follow steps 1–4 of the [first-time tuning section in README.md](README.md#first-time-tuning) before touching the MPC parameters.
+**Step 1 — cap the throttle**
+
+Start with `--max-throttle 80` (40 % of the hardware maximum of 200). This keeps the car slow enough to catch mistakes while you verify tracking behaviour.
+
+**Step 2 — run one lap**
+
+```bash
+python3 mpc_racing.py --laps 1 --max-throttle 80
+```
+
+Watch whether the car follows the raceline. If it consistently undershoots corners, increase `--speed-kp`. If it oscillates, reduce it.
+
+**Step 3 — calibrate the speed controller**
+
+The throttle command is `speed_gain × v_ref + speed_kp × (v_ref − v_est)`. At steady state the proportional term goes to zero, so `speed_gain` is the dominant knob. Find the throttle value that holds a constant low speed on a straight, divide it by that speed, and use the result as `--speed-gain`.
+
+**Step 4 — tune yaw correction**
+
+`--yaw-correction` compensates for a fixed offset between the Vicon frame and the car's forward axis. If the car consistently steers left or right of the raceline from the very start, adjust this value in small increments (±0.05 rad). The default of `0.3` was determined empirically on this platform.
+
+**Step 5 — increase speed**
+
+Once the car tracks cleanly at low speed, raise `--max-throttle` in steps of 20 and re-run. The raceline `v_ref` values top out at 4 m/s; the controller will naturally approach that speed as the ceiling is lifted.
 
 ### MPC-specific parameters
 

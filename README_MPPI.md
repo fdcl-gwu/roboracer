@@ -45,15 +45,22 @@ cd roboracer
 
 ### 4. Power on and connect to the Vicon system
 
-_[To be documented — covers switching on the Vicon PC, verifying camera calibration is current, and confirming the host machine can reach the Vicon server at `192.168.10.1`.]_
+- Connect to NETGEAR74 with associated password (ask Maneesh or Mark)
+- Turn on the three Vicon boxes
+- Log in to the Vicon PC and open Vicon Tracker 4.4
+- Wait for Vicon camera rings to turn blue
+
 
 ### 5. Create or verify the Vicon subject
 
-_[To be documented — covers opening Vicon Tracker, confirming the car's subject name (default: `UGV`), and verifying that markers are visible and the object is being tracked.]_
+- Make sure the car is inside the Vicon field with the tracking markers attached and oriented correctly
+- Ensure that the car shows up on the Vicon tracking screen labeled as UGV
+    - If it is not called UGV, you will need to change the associated label before running the test scripts
 
 ### 6. Connect the car
 
-_[To be documented — covers powering on the car, identifying the correct serial port (`/dev/ttyUSB0` by default), and confirming the USB serial adapter is recognised by the host.]_
+- Plug the car's battery in and ensure that the SiK radios are connected
+- The light will stay solid blue if the radios are connected
 
 ### 7. Verify Vicon tracking before driving
 
