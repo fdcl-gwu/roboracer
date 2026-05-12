@@ -1,0 +1,411 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, bm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{booktabs}
+\usepackage{array}
+
+\geometry{margin=1.1in}
+
+\title{\textbf{RoboRacer Control: MPPI and Nonlinear MPC}\\[0.4em]
+\large Mathematical Overview}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Vehicle Model}
+
+Both controllers share the same underlying vehicle model: the \textbf{kinematic bicycle
+model}. It treats the car as a single-track rigid body with no tire slip, making
+it valid at low-to-moderate speeds where lateral acceleration is small enough
+that the tires remain near the linear region of their force--slip curves.
+
+\subsection{States and Inputs}
+
+\[
+\bm{x} = \begin{pmatrix} X \\ Y \\ \psi \\ v \end{pmatrix}, \qquad
+\bm{u} = \begin{pmatrix} \delta \\ a \end{pmatrix}
+\]
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Symbol & Description & Unit \\
+\midrule
+$X, Y$ & Global position & m \\
+$\psi$ & Heading angle (yaw) & rad \\
+$v$    & Longitudinal speed & m s$^{-1}$ \\
+$\delta$ & Front-wheel steering angle & rad \\
+$a$    & Longitudinal acceleration & m s$^{-2}$ \\
+$L$    & Wheelbase & m \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Continuous-Time Dynamics}
+
+\begin{align}
+\dot{X}   &= v \cos\psi \label{eq:xdot}\\
+\dot{Y}   &= v \sin\psi \label{eq:ydot}\\
+\dot{\psi} &= \frac{v}{L}\tan\delta \label{eq:psidot}\\
+\dot{v}   &= a \label{eq:vdot}
+\end{align}
+
+Equation~\eqref{eq:psidot} is derived from Ackermann geometry: for a bicycle
+model the instantaneous turning radius is $R = L / \tan\delta$, so the yaw rate
+is $\dot{\psi} = v/R$.
+
+\subsection{Constraints}
+
+\[
+\delta \in [-\delta_{\max},\; \delta_{\max}], \qquad
+a     \in [a_{\min},\; a_{\max}], \qquad
+v     \in [0,\; v_{\max}]
+\]
+
+with $\delta_{\max} = 0.44\,\text{rad}$, $a_{\min} = -6.15$, $a_{\max} = 6.15\,\text{m\,s}^{-2}$,
+$v_{\max} = 15\,\text{m\,s}^{-1}$, and $L = 0.324\,\text{m}$.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Raceline and Reference Trajectory}
+
+A pre-computed raceline CSV provides the reference:
+\[
+\mathcal{R} = \{(X_i,\, Y_i,\, \psi_i,\, v_{\text{ref},i},\, s_i)\}_{i=0}^{M-1}
+\]
+where $s_i$ is the cumulative arc length at waypoint $i$.  Given the car's
+current position, the \textbf{closest waypoint index} $i^*$ is found by
+exhaustive nearest-neighbour search.  Lookahead reference points at horizon
+step $k$ are obtained by projecting $k$ steps forward in arc length:
+\[
+s_{\text{ref}}(k) = s_{i^*} + k \cdot v_{\text{ref},i^*} \cdot \Delta t
+\]
+and then looking up the corresponding raceline index via binary search on the
+arc-length array.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{MPPI --- Model Predictive Path Integral Control}
+
+\subsection{Conceptual Overview}
+
+MPPI (Williams et al., 2017) is a \textbf{sampling-based} MPC variant rooted in
+stochastic optimal control and information theory.  Instead of solving an
+optimisation problem, it runs $K$ random \emph{rollouts} of the vehicle model
+forward in time, scores each one with a cost function, and then computes the
+optimal control as a cost-weighted average of all the rollout inputs.
+
+On the RoboRacer, at every 25\,ms control step:
+\begin{enumerate}
+  \item $K = 300$ random perturbation sequences are sampled.
+  \item Each is propagated through the bicycle model for $N = 20$ steps.
+  \item Each trajectory is scored: trajectories that stay close to the raceline
+        receive high importance weight; trajectories that deviate are down-weighted.
+  \item The optimal input is a soft mixture of all sequences, dominated by the
+        best-performing ones.
+  \item Only the first input of the mixture is applied to the car; the full
+        sequence is shifted and reused as the warm start for the next step.
+\end{enumerate}
+
+\subsection{Discrete-Time Dynamics (Euler)}
+
+MPPI propagates an ensemble of states simultaneously using vectorised forward
+Euler integration:
+
+\begin{align}
+X_{t+1}^{(k)}   &= X_t^{(k)} + v_t^{(k)}\cos\psi_t^{(k)}\,\Delta t \\
+Y_{t+1}^{(k)}   &= Y_t^{(k)} + v_t^{(k)}\sin\psi_t^{(k)}\,\Delta t \\
+\psi_{t+1}^{(k)} &= \psi_t^{(k)} + \frac{v_t^{(k)}}{L}\tan\delta_t^{(k)}\,\Delta t \\
+v_{t+1}^{(k)}   &= \mathrm{clip}\!\left(v_t^{(k)} + a_t^{(k)}\,\Delta t,\; 0,\; v_{\max}\right)
+\end{align}
+
+The $\mathrm{clip}$ in the velocity update is a practical bound: it is
+non-differentiable, but MPPI never requires gradients through the dynamics.
+
+\subsection{Algorithm}
+
+Let $\bm{U} = [\bm{u}_0, \dots, \bm{u}_{N-1}] \in \mathbb{R}^{N \times 2}$
+be the current nominal (warm-start) sequence and $\lambda > 0$ the temperature.
+
+\paragraph{Step 1 -- Sample perturbations.}
+\[
+\bm{\varepsilon}^{(k)} \sim \mathcal{N}(\bm{0},\, \bm{\Sigma}), \qquad k = 1,\dots,K
+\]
+with $\bm{\Sigma} = \mathrm{diag}(\sigma_\delta^2, \sigma_a^2)$,
+$\sigma_\delta = 0.15\,\text{rad}$, $\sigma_a = 1.5\,\text{m\,s}^{-2}$.
+
+\paragraph{Step 2 -- Form and clip perturbed sequences.}
+\[
+\bm{V}^{(k)} = \mathrm{clip}\!\left(\bm{U} + \bm{\varepsilon}^{(k)},\; \bm{u}_{\min},\; \bm{u}_{\max}\right)
+\]
+
+\paragraph{Step 3 -- Roll out and accumulate cost.}
+Starting from the current state $\bm{x}_0$, propagate each sequence and
+accumulate the running cost:
+\[
+J^{(k)} = \sum_{t=0}^{N-1} c\!\left(\bm{x}_t^{(k)},\; \bm{V}_t^{(k)}\right)
+\]
+
+\paragraph{Step 4 -- Compute importance weights.}
+Subtract the minimum for numerical stability, then normalise:
+\[
+\beta = \min_k J^{(k)}, \qquad
+\tilde{w}_k = \exp\!\left(-\frac{J^{(k)} - \beta}{\lambda}\right), \qquad
+w_k = \frac{\tilde{w}_k}{\sum_j \tilde{w}_j}
+\]
+Low temperature $\lambda$ concentrates weight on the best rollouts (greedy);
+high temperature spreads it more evenly (exploratory).
+
+\paragraph{Step 5 -- Update nominal sequence.}
+\[
+\bm{U}^* = \sum_{k=1}^{K} w_k \bm{V}^{(k)}
+\]
+
+\paragraph{Step 6 -- Apply and shift.}
+Apply $\bm{u}_0^*$ to the car.  Shift the sequence left by one step and zero-pad
+the tail to form the warm start for the next control iteration.
+
+\subsection{Cost Function}
+
+\[
+c(\bm{x}_t, \bm{u}_t) =
+  W_{\text{CTE}} \underbrace{\left\|\bm{p}_t - \bm{p}_{\text{ref}}(t)\right\|_2}_{\text{cross-track error}}
++ W_h \underbrace{\left|\psi_t - \psi_{\text{ref}}(t)\right|_{\pi}}_{\text{heading error}}
++ W_v \underbrace{\left|v_t - v_{\text{ref}}(t)\right|}_{\text{speed error}}
++ W_s\, \delta_t^2
+\]
+
+where $|\cdot|_\pi$ denotes the wrapped absolute angle difference and
+$\bm{p}_{\text{ref}}(t)$, $\psi_{\text{ref}}(t)$, $v_{\text{ref}}(t)$ are
+looked up from the raceline at the projected arc position.
+
+\medskip
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Weight & Value & Meaning \\
+\midrule
+$W_{\text{CTE}}$ & 5.0 & Penalise lateral deviation from the raceline \\
+$W_h$            & 2.0 & Penalise heading misalignment \\
+$W_v$            & 1.0 & Penalise speed error relative to $v_{\text{ref}}$ \\
+$W_s$            & 5.0 & Penalise harsh steering inputs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Nonlinear MPC}
+
+\subsection{Conceptual Overview}
+
+Nonlinear MPC frames vehicle control as a \textbf{constrained optimisation
+problem} solved at every timestep.  Rather than sampling random trajectories,
+it \emph{solves} for the single best input sequence that minimises a quadratic
+cost subject to the vehicle dynamics and hard input/state constraints.
+
+On the RoboRacer, at every 25\,ms control step:
+\begin{enumerate}
+  \item The current Vicon pose is fed to the acados solver as the initial condition.
+  \item The reference trajectory for the next $N$ prediction steps is looked up from
+        the raceline.
+  \item The solver performs one SQP-RTI step: it linearises the nonlinear dynamics
+        around the warm-started trajectory, solves the resulting quadratic programme
+        (QP) using HPIPM, and returns the optimal input.
+  \item Only the first input of the sequence is applied; the rest warm-start the
+        next solve.
+\end{enumerate}
+
+\subsection{Continuous-Time Dynamics}
+
+Unlike MPPI, the MPC uses the continuous-time ODE \eqref{eq:xdot}--\eqref{eq:vdot}
+directly. acados integrates it numerically using explicit Runge--Kutta 4 (ERK4):
+
+\[
+\bm{x}_{k+1} = \bm{x}_k + \frac{\Delta t}{6}
+  \left(\bm{f}_1 + 2\bm{f}_2 + 2\bm{f}_3 + \bm{f}_4\right)
+\]
+
+where $\bm{f}_1, \dots, \bm{f}_4$ are the standard RK4 stage derivatives of
+$\dot{\bm{x}} = f(\bm{x}, \bm{u})$.  This is more accurate than forward Euler
+and does not require the velocity $\mathrm{clip}$; speed bounds are instead
+expressed as explicit inequality constraints:
+\[
+0 \leq v_k \leq v_{\max} \qquad \forall\, k = 1, \dots, N
+\]
+
+\subsection{Optimal Control Problem}
+
+At time $t$ with current state $\bm{x}_0$:
+
+\begin{align}
+\min_{\bm{u}_0,\,\dots,\,\bm{u}_{N-1}} \quad
+  &\sum_{k=0}^{N-1} \ell(\bm{x}_k,\, \bm{u}_k)
+  \;+\; \ell_N(\bm{x}_N) \label{eq:ocp}\\
+\text{subject to} \quad
+  &\bm{x}_{k+1} = F(\bm{x}_k, \bm{u}_k) \tag{dynamics}\\
+  &\bm{u}_k \in [\bm{u}_{\min},\, \bm{u}_{\max}] \tag{input bounds}\\
+  &v_k \in [0,\, v_{\max}] \tag{speed bound}\\
+  &\bm{x}_0 = \bm{x}_{\text{current}} \tag{initial condition}
+\end{align}
+
+where $F(\bm{x}_k, \bm{u}_k)$ denotes one ERK4 step of the bicycle ODE.
+
+\subsection{Cost Function}
+
+A Linear Least-Squares (LINEAR\_LS) cost is used:
+\[
+\ell(\bm{x}_k, \bm{u}_k)
+  = \left\|\bm{y}_k - \bm{y}_{\text{ref},k}\right\|_{\bm{W}}^2
+  = \left(\bm{y}_k - \bm{y}_{\text{ref},k}\right)^{\!\top}
+    \bm{W}
+    \left(\bm{y}_k - \bm{y}_{\text{ref},k}\right)
+\]
+
+with the residual vector
+\[
+\bm{y}_k = \begin{pmatrix} X_k \\ Y_k \\ \psi_k \\ v_k \\ \delta_k \\ a_k \end{pmatrix},
+\qquad
+\bm{y}_{\text{ref},k} = \begin{pmatrix} X_{\text{ref},k} \\ Y_{\text{ref},k} \\ \psi_{\text{ref},k} \\ v_{\text{ref},k} \\ 0 \\ 0 \end{pmatrix},
+\qquad
+\bm{W} = \mathrm{diag}(W_{\text{CTE}},\, W_{\text{CTE}},\, W_h,\, W_v,\, W_s,\, W_a)
+\]
+
+The zero reference for $\delta$ and $a$ means the solver penalises control effort
+(regularisation), keeping the trajectory smooth.  The terminal cost uses the
+same structure with $\bm{W}_N = \mathrm{diag}(W_{\text{CTE}}, W_{\text{CTE}}, W_h, W_v)$.
+
+\medskip
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Weight & Value & Meaning \\
+\midrule
+$W_{\text{CTE}}$ & 5.0 & Position tracking (applied to both $X$ and $Y$ residuals) \\
+$W_h$            & 2.0 & Heading tracking \\
+$W_v$            & 1.0 & Speed tracking \\
+$W_s$            & 5.0 & Steering regularisation \\
+$W_a$            & 0.1 & Acceleration regularisation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{SQP Real-Time Iteration (SQP-RTI)}
+
+Solving the full NLP \eqref{eq:ocp} to convergence at 40\,Hz is infeasible for
+large horizons.  The \textbf{Real-Time Iteration} (Diehl et al., 2005) scheme
+replaces the full NLP solve with a single SQP step per control cycle.
+
+At each step, the NLP is linearised around the current warm-start trajectory
+$(\bar{\bm{X}}, \bar{\bm{U}})$ to obtain a \textbf{quadratic programme}:
+
+\begin{align}
+\min_{\Delta\bm{U}} \quad
+  &\frac{1}{2}\,\Delta\bm{U}^{\!\top} H\,\Delta\bm{U}
+  + \bm{g}^{\!\top}\Delta\bm{U} \\
+\text{subject to} \quad
+  &C\,\Delta\bm{U} = \bm{c} \tag{linearised dynamics}\\
+  &\bm{u}_{\min} - \bar{\bm{U}} \leq \Delta\bm{U} \leq \bm{u}_{\max} - \bar{\bm{U}} \tag{input bounds}
+\end{align}
+
+where $H$ is the Gauss--Newton Hessian approximation and $\bm{g}$ the gradient
+of the cost.  The QP is solved by \textbf{HPIPM} (partial condensing), and the
+solution $\Delta\bm{U}^*$ is added to the warm start.
+
+Because the initial state changes only slightly between control steps (the car
+has moved 25\,ms worth), the warm-started trajectory is already close to the new
+optimum and one SQP step is sufficient to track it accurately.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+
+\section{Throttle Control}
+
+Neither controller directly commands a wheel torque.  Both use a
+\textbf{feedforward + proportional speed controller} that maps the raceline
+reference velocity to a dimensionless throttle integer (0--200):
+
+\[
+\tau = \mathrm{clip}\!\left(K_{\mathrm{ff}}\, v_{\mathrm{ref}} + K_p\,(v_{\mathrm{ref}} - \hat{v}),\; 0,\; \tau_{\max}\right)
+\]
+
+where $\hat{v}$ is the speed estimate from Vicon position differences
+(EMA-smoothed), $K_{\mathrm{ff}} = 20$ and $K_p = 5$ are default gains.
+The MPPI acceleration output $a$ and the MPC acceleration command $a^*$ are
+not used for throttle: the powertrain model is not calibrated, so a direct
+$a \to \tau$ mapping would require empirical identification.
+
+\medskip
+
+The steering servo command (integer 120--880) is derived from the controller's
+steering angle output in both cases:
+\[
+\tau_{\delta} = \mathrm{clip}\!\left(\tau_{\text{center}} + K_{\text{srv}}\,\delta + \tau_{\text{trim}},\;
+  \tau_{\min},\; \tau_{\max}\right)
+\]
+with $\tau_{\text{center}} = 512$, $K_{\text{srv}} = 1200$\,servo-units/rad,
+$\tau_{\text{trim}} = 20$.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Future Model Improvements}
+
+\subsection{Dynamic Bicycle Model}
+
+The kinematic model assumes zero tire slip, which is only valid when lateral
+acceleration $a_y \ll \mu g$.  At higher speeds the tires develop meaningful
+slip angles and the kinematic model underestimates the required steering.
+
+The \textbf{dynamic bicycle model} adds lateral velocity $v_y$ and yaw rate
+$r = \dot{\psi}$ as states, and replaces the kinematic steering constraint with
+force balance equations:
+
+\[
+\bm{x} = \begin{pmatrix} X \\ Y \\ \psi \\ v_x \\ v_y \\ r \end{pmatrix},
+\qquad
+m\dot{v}_y = F_{y,f} + F_{y,r} - m v_x r, \qquad
+I_z\dot{r} = L_f F_{y,f} - L_r F_{y,r}
+\]
+
+where $m$ is vehicle mass, $I_z$ yaw moment of inertia, $L_f$/$L_r$ are
+distances from CG to front/rear axles, and $F_{y,f}$, $F_{y,r}$ are lateral
+tire forces.  For a linear tire model: $F_{y,f} = -C_f\alpha_f$,
+$F_{y,r} = -C_r\alpha_r$, with slip angles
+
+\[
+\alpha_f = \delta - \arctan\!\left(\frac{v_y + L_f r}{v_x}\right), \qquad
+\alpha_r = -\arctan\!\left(\frac{v_y - L_r r}{v_x}\right)
+\]
+
+and cornering stiffnesses $C_f$, $C_r$ identified from vehicle tests.
+
+\subsection{Pacejka ``Magic Formula'' Tire Model}
+
+For cornering beyond the linear regime (slipping or near-limit driving), the
+linear tire force model fails.  The \textbf{Pacejka magic formula} (Pacejka,
+2012) captures the full nonlinear force--slip curve:
+
+\[
+F_y(\alpha) = D\,\sin\!\Big[C\arctan\!\Big(B\alpha - E\big(B\alpha - \arctan(B\alpha)\big)\Big)\Big]
+\]
+
+where $B$ (stiffness factor), $C$ (shape factor), $D$ (peak value), and $E$
+(curvature factor) are tire-specific parameters.  At small slip angles the
+formula reduces to the linear model ($F_y \approx BCD\,\alpha$, so
+$C_{\text{eff}} = BCD$), ensuring consistency with the linear model.
+
+Replacing the linear tire forces in the dynamic bicycle model with the Pacejka
+formula gives a \textbf{quarter-car + Pacejka} model that is accurate from
+low-speed cruising through near-limit cornering.  Both MPPI and the MPC
+formulation can accommodate it without structural changes: MPPI requires only
+that the forward model be evaluable; MPC requires additionally that $F_y$ is
+differentiable, which the smooth Pacejka formula satisfies.
+
+\end{document}
