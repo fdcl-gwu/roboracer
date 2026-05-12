@@ -339,8 +339,35 @@ reference velocity to a dimensionless throttle integer (0--200):
 where $\hat{v}$ is the speed estimate from Vicon position differences
 (EMA-smoothed), $K_{\mathrm{ff}} = 20$ and $K_p = 5$ are default gains.
 The MPPI acceleration output $a$ and the MPC acceleration command $a^*$ are
-not used for throttle: the powertrain model is not calibrated, so a direct
-$a \to \tau$ mapping would require empirical identification.
+not used for throttle for four compounding reasons:
+
+\begin{enumerate}
+  \item \textbf{No calibrated actuator model.}  Both controllers output $a$ in
+        m\,s$^{-2}$, but the hardware input is a dimensionless throttle integer
+        sent to an ESC.  The mapping throttle $\to$ torque $\to$ acceleration
+        varies with speed, battery voltage, and surface friction.  Without
+        empirical system identification a direct $a \to \tau$ conversion is
+        unreliable.
+
+  \item \textbf{Noisy velocity estimate.}  $\hat{v}$ is computed from finite
+        differences of Vicon positions and is EMA-smoothed but still noisy.
+        That noise enters the MPPI/MPC initial state, propagates through all
+        rollouts or linearisations, and produces a noisy $a$ command.  A simple
+        proportional controller on $v_{\mathrm{ref}} - \hat{v}$ is far more
+        forgiving of this noise than closing the throttle loop through the
+        optimiser.
+
+  \item \textbf{Speed profile already solved offline.}  The raceline CSV encodes
+        a pre-optimised speed profile (slow for tight corners, fast on
+        straights).  Re-optimising speed online adds complexity without benefit
+        when the reference profile is already well-designed; the controller
+        need only track it.
+
+  \item \textbf{Decoupled tuning.}  At low slip angles, lateral and longitudinal
+        dynamics interact weakly.  Keeping the speed loop separate means
+        $K_{\mathrm{ff}}$ and $K_p$ can be tuned independently of the MPPI
+        hyper-parameters or MPC weights, making both easier to diagnose.
+\end{enumerate}
 
 \medskip
 
