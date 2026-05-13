@@ -140,7 +140,7 @@ def load_raceline(path: str) -> Raceline:
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            pts.append([float(row["x"]), float(row["y"]), float(row["v_ref"])])
+            pts.append([float(row["x"]) + 2.0, float(row["y"]), float(row["v_ref"]) + 1.0])
             psi.append(float(row["psi"]))
             arcs.append(float(row["s"]))
     points      = np.array(pts,  dtype=float)
@@ -230,7 +230,7 @@ def mppi_step(
 # ── Control conversion ────────────────────────────────────────────────────────
 def delta_to_steering(delta: float) -> int:
     """Convert MPPI steering angle (rad) → servo command."""
-    raw = STEER_CENTER + STEER_GAIN * delta + STEER_TRIM
+    raw = STEER_CENTER - STEER_GAIN * delta + STEER_TRIM
     return int(np.clip(raw, STEER_MIN, STEER_MAX))
 
 
@@ -251,13 +251,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--raceline",        default="raceline.csv",   help="Path to raceline CSV")
     p.add_argument("--port",            default="/dev/ttyUSB0",   help="Serial port")
     p.add_argument("--laps",            type=int,   default=3,    help="Laps to complete; 0 = run forever")
-    p.add_argument("--yaw-correction",  type=float, default=0.3,  help="Yaw offset added to Vicon heading (rad)")
+    p.add_argument("--yaw-correction",  type=float, default=3.44, help="Yaw offset added to Vicon heading (rad)")
     p.add_argument("--speed-gain",      type=float, default=20.0, help="Feedforward throttle gain (throttle_ff = gain * v_ref)")
     p.add_argument("--speed-kp",        type=float, default=5.0,  help="Proportional gain on speed error")
     p.add_argument("--max-throttle",    type=int,   default=200,  help="Maximum throttle command [0–2047]")
     p.add_argument("--rollouts",        type=int,   default=300,  help="MPPI rollout count")
     p.add_argument("--horizon",         type=int,   default=20,   help="MPPI horizon steps")
-    p.add_argument("--subject",         default="UGV",            help="Vicon subject name")
+    p.add_argument("--subject",         default="OriginsX",       help="Vicon subject name")
     p.add_argument("--server",          default="192.168.10.1",   help="Vicon server IP")
     return p.parse_args()
 
