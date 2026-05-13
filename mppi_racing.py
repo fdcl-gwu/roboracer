@@ -460,6 +460,7 @@ def main() -> None:
         laps_completed    = 0
         near_end          = False
         prev_closest_index = -1
+        last_plot_t = 0.0
 
         lap_target_str = str(args.laps) if args.laps > 0 else "unlimited"
         print(f"Running MPPI. Target laps: {lap_target_str}. Press Ctrl-C to abort.")
@@ -524,10 +525,12 @@ def main() -> None:
             ser.write(pkt)
             seq += 1
 
-            live.update(t_now, cte, heading_err, vel_err, mppi_cost,
-                        state, planned_traj, control.delta)
-
             time.sleep(0.025)  # ~40 Hz command rate
+
+            if t_now - last_plot_t >= 0.1:  # update visualization at ~10 Hz
+                live.update(t_now, cte, heading_err, vel_err, mppi_cost,
+                            state, planned_traj, control.delta)
+                last_plot_t = t_now
 
     except KeyboardInterrupt:
         print("\nKeyboard interrupt.")
