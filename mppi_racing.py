@@ -59,15 +59,15 @@ DELTA_MAX  =  0.44  # rad, max front-wheel steering angle
 
 # ── MPPI hyper-parameters ─────────────────────────────────────────────────────
 MPPI_DT          = 0.05   # prediction step size (s)
-MPPI_TEMPERATURE = 0.5    # lower = greedier exploitation of best rollouts
-MPPI_NOISE       = np.array([0.15, 1.5])  # perturbation std for [delta, a]
+MPPI_TEMPERATURE = 75.0   # must be same order-of-magnitude as the spread of rollout costs;
+                           # T=0.5 with these weights gave argmin behaviour → wild oscillations
+MPPI_NOISE       = np.array([0.40, 1.5])  # perturbation std for [delta, a]
 
 # Cost weights
-W_CTE     = 5.0   # cross-track error
-W_HEADING = 2.0   # heading error
+W_CTE     = 25.0   # cross-track error
+W_HEADING = 5.0   # heading error
 W_SPEED   = 1.0   # speed tracking
-W_STEER   = 5.0   # steering effort magnitude
-W_SMOOTH  = 3.0   # steering-rate penalty (change between consecutive steps)
+W_STEER   = 2.0   # steering effort magnitude
 
 MPPI_MIN_LOOKAHEAD_VEL = 1.5  # m/s — minimum arc speed for reference point spread
 
@@ -205,6 +205,7 @@ def mppi_step(
     """Return the optimal first-step control, updated warm-start sequence, planned (x,y) trajectory, and minimum rollout cost."""
 
     ref_vel_at_closest = raceline.points[closest_index, 2]
+    lookahead_vel = max(ref_vel_at_closest, MPPI_MIN_LOOKAHEAD_VEL)
 
     # Step 1 & 2: sample perturbations around the warm-start sequence
     perturbations = np.random.randn(n_rollouts, horizon, 2) * MPPI_NOISE
@@ -228,10 +229,6 @@ def mppi_step(
         rollout_states[:, 2]  = (rollout_states[:, 2] + math.pi) % (2 * math.pi) - math.pi
         rollout_states[:, 3]  = np.clip(rollout_states[:, 3] + a * MPPI_DT, 0.0, MAX_SPEED)
 
-        # Reference point — use a minimum lookahead velocity so the reference
-        # points stay spatially spread even when the car is slow/stopped,
-        # preventing the MPPI gradient from collapsing near zero steering.
-        lookahead_vel = max(ref_vel_at_closest, MPPI_MIN_LOOKAHEAD_VEL)
         next_arc  = raceline.arc_lengths[closest_index] + (k + 1) * lookahead_vel * MPPI_DT
         ref_index = raceline.index_at_arc_length(next_arc)
         ref_pos   = raceline.points[ref_index, :2]
@@ -243,8 +240,7 @@ def mppi_step(
         psi_err = np.abs((rollout_states[:, 2] - ref_psi + math.pi) % (2 * math.pi) - math.pi)
         vel_err = np.abs(rollout_states[:, 3] - ref_vel)
 
-        steer_rate = (delta - episodes[:, k-1, 0]) if k > 0 else delta
-        costs += W_CTE * cte + W_HEADING * psi_err + W_SPEED * vel_err + W_STEER * delta**2 + W_SMOOTH * steer_rate**2
+        costs += W_CTE * cte + W_HEADING * psi_err + W_SPEED * vel_err + W_STEER * delta**2
 
     # Steps 4 & 5: importance-weighted mixture
     min_cost = float(costs.min())
@@ -400,8 +396,8 @@ class LivePlot:
         self.l_cost.set_data(ta, self.cost_buf)
         self.ax_cost.relim(); self.ax_cost.autoscale_view()
 
-        self.l_car.set_data([state.x + RACELINE_X_OFFSET], [state.y])
-        self.l_traj.set_data(planned_traj[:, 0] + RACELINE_X_OFFSET, planned_traj[:, 1])
+        self.l_car.set_data([state.x], [state.y])
+        self.l_traj.set_data(planned_traj[:, 0], planned_traj[:, 1])
 
         self.l_steer.set_data([delta], [0])
 
@@ -418,14 +414,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--raceline",        default="raceline.csv",   help="Path to raceline CSV")
     p.add_argument("--port",            default="/dev/ttyUSB0",   help="Serial port")
     p.add_argument("--laps",            type=int,   default=3,    help="Laps to complete; 0 = run forever")
-    p.add_argument("--yaw-correction",  type=float, default=0.0, help="Yaw offset added to Vicon heading (rad)")
+    p.add_argument("--yaw-correction",  type=float, default=0.0,  help="Yaw offset added to Vicon heading (rad)")
     p.add_argument("--speed-gain",      type=float, default=20.0, help="Feedforward throttle gain (throttle_ff = gain * v_ref)")
     p.add_argument("--speed-kp",        type=float, default=5.0,  help="Proportional gain on speed error")
     p.add_argument("--max-throttle",    type=int,   default=200,  help="Maximum throttle command [0–2047]")
     p.add_argument("--rollouts",        type=int,   default=300,  help="MPPI rollout count")
     p.add_argument("--horizon",         type=int,   default=20,   help="MPPI horizon steps")
-    p.add_argument("--subject",         default="UGV",       help="Vicon subject name")
+    p.add_argument("--subject",         default="UGV",            help="Vicon subject name")
     p.add_argument("--server",          default="192.168.11.2",   help="Vicon server IP")
+    p.add_argument("--simulation",      action="store_true",      help="Run in simulation mode (no Vicon or radio required)")
+    p.add_argument("--sim-v0",          type=float, default=0.0,  help="Initial speed in simulation (m/s)")
     return p.parse_args()
 
 
@@ -439,58 +437,77 @@ def main() -> None:
 
     live = LivePlot(raceline)
 
-    object_name = f"{args.subject}@{args.server}"
-
+    # ── Hardware handles (real mode only) ─────────────────────────────────────
     vicon = None
     ser   = None
     seq   = 0
 
-    try:
-        vicon = vicon_tracker.vicon()
-        vicon.open(object_name)
-        print(f"Vicon connected: {object_name}")
+    # ── Simulation state ──────────────────────────────────────────────────────
+    # Initialised at the first raceline point (already in the Vicon/shifted frame).
+    sim_x   = float(raceline.points[0, 0])
+    sim_y   = float(raceline.points[0, 1])
+    sim_psi = float(raceline.psis[0])
+    sim_v   = args.sim_v0
+    sim_delta = 0.0
+    sim_a     = 0.0
+    prev_sim_t: float = None  # type: ignore[assignment]
 
-        ser = serial.Serial(args.port, BAUD_RATE, timeout=0.1)
-        time.sleep(0.1)
-        ser.reset_input_buffer()
-        print(f"Serial open: {args.port} @ {BAUD_RATE}")
+    try:
+        if not args.simulation:
+            object_name = f"{args.subject}@{args.server}"
+            vicon = vicon_tracker.vicon()
+            vicon.open(object_name)
+            print(f"Vicon connected: {object_name}")
+
+            ser = serial.Serial(args.port, BAUD_RATE, timeout=0.1)
+            time.sleep(0.1)
+            ser.reset_input_buffer()
+            print(f"Serial open: {args.port} @ {BAUD_RATE}")
+        else:
+            print("Simulation mode — no Vicon or radio connection.")
 
         working_sequence = np.zeros((args.horizon, 2))
 
-        # Velocity estimation state
+        # Velocity estimation (real mode only)
         prev_x, prev_y, prev_t = None, None, None
         v_est = 0.0
 
-        # Lap counting
-        # near_end is set when prev_closest_index was in the final 10% of the track.
-        # prev_closest_index is initialised to -1 so that near_end is never armed on
-        # the very first frame, regardless of where the car starts.
-        # NOTE: if the car starts in the final 10% of the raceline, the first wrap will
-        # be counted as a completed lap even though only a partial lap was run.
-        # To avoid this, start the car in the first 90% of the raceline.
-        laps_completed    = 0
-        near_end          = False
+        laps_completed     = 0
+        near_end           = False
         prev_closest_index = -1
-        last_plot_t = 0.0
+        last_plot_t        = 0.0
 
         lap_target_str = str(args.laps) if args.laps > 0 else "unlimited"
-        print(f"Running MPPI. Target laps: {lap_target_str}. Press Ctrl-C to abort.")
+        mode_str = "SIMULATION" if args.simulation else "MPPI"
+        print(f"Running {mode_str}. Target laps: {lap_target_str}. Press Ctrl-C to abort.")
 
         while True:
-            t_now    = time.time()
-            x_v, R_vm = vicon.loop()
-            x, y, _  = x_v
+            t_now = time.time()
 
-            # Estimate speed from Vicon position differences (EMA-smoothed)
-            if prev_x is not None:
-                dt = t_now - prev_t
-                if dt > 0.0:
-                    raw_v = math.hypot(x - prev_x, y - prev_y) / dt
-                    v_est = VEL_ALPHA * raw_v + (1.0 - VEL_ALPHA) * v_est
-            prev_x, prev_y, prev_t = x, y, t_now
-
-            yaw   = np.arctan2(R_vm[1, 0], R_vm[0, 0]) + args.yaw_correction
-            state = VehicleState(x=x, y=y, psi=yaw, v=v_est)
+            # ── State acquisition ─────────────────────────────────────────────
+            if args.simulation:
+                if prev_sim_t is not None:
+                    dt_sim = t_now - prev_sim_t
+                    sim_x   += sim_v * math.cos(sim_psi) * dt_sim
+                    sim_y   += sim_v * math.sin(sim_psi) * dt_sim
+                    sim_psi  = normalize_angle(
+                        sim_psi + sim_v / WHEELBASE * math.tan(sim_delta) * dt_sim
+                    )
+                    sim_v = float(np.clip(sim_v + sim_a * dt_sim, 0.0, MAX_SPEED))
+                prev_sim_t = t_now
+                v_est = sim_v
+                state = VehicleState(x=sim_x, y=sim_y, psi=sim_psi, v=sim_v)
+            else:
+                x_v, R_vm = vicon.loop()
+                x, y, _   = x_v
+                if prev_x is not None:
+                    dt = t_now - prev_t
+                    if dt > 0.0:
+                        raw_v = math.hypot(x - prev_x, y - prev_y) / dt
+                        v_est = VEL_ALPHA * raw_v + (1.0 - VEL_ALPHA) * v_est
+                prev_x, prev_y, prev_t = x, y, t_now
+                yaw   = np.arctan2(R_vm[1, 0], R_vm[0, 0]) + args.yaw_correction
+                state = VehicleState(x=x, y=y, psi=yaw, v=v_est)
 
             closest_index = find_closest_raceline_point(state, raceline)
 
@@ -520,23 +537,32 @@ def main() -> None:
             heading_err = normalize_angle(state.psi - raceline.psis[closest_index])
             vel_err     = v_est - v_ref
 
-            steering = delta_to_steering(control.delta)
-            throttle = compute_throttle(v_ref, v_est,
-                                        args.speed_gain, args.speed_kp,
-                                        args.max_throttle)
+            # ── Command dispatch ──────────────────────────────────────────────
+            if args.simulation:
+                sim_delta = float(np.clip(control.delta, -DELTA_MAX, DELTA_MAX))
+                sim_a     = float(np.clip(control.a,     MAX_DECEL,  MAX_ACCEL))
+                print(
+                    f"[SIM] x={sim_x:.3f} y={sim_y:.3f} psi={sim_psi:.3f} "
+                    f"v={sim_v:.2f} v_ref={v_ref:.2f} "
+                    f"lap={laps_completed} idx={closest_index} "
+                    f"delta={control.delta:.3f} a={control.a:.3f}"
+                )
+            else:
+                steering = delta_to_steering(control.delta)
+                throttle = compute_throttle(v_ref, v_est,
+                                            args.speed_gain, args.speed_kp,
+                                            args.max_throttle)
+                print(
+                    f"x={state.x:.3f} y={state.y:.3f} yaw={state.psi:.3f} "
+                    f"v_est={v_est:.2f} v_ref={v_ref:.2f} "
+                    f"lap={laps_completed} idx={closest_index} "
+                    f"delta={control.delta:.3f} throttle={throttle} steer={steering}"
+                )
+                pkt = build_packet(seq, throttle, steering)
+                ser.write(pkt)
+                seq += 1
 
-            print(
-                f"x={x:.3f} y={y:.3f} yaw={yaw:.3f} "
-                f"v_est={v_est:.2f} v_ref={v_ref:.2f} "
-                f"lap={laps_completed} idx={closest_index} "
-                f"delta={control.delta:.3f} throttle={throttle} steer={steering}"
-            )
-
-            pkt = build_packet(seq, throttle, steering)
-            ser.write(pkt)
-            seq += 1
-
-            time.sleep(0.025)  # ~40 Hz command rate
+            time.sleep(0.025)  # ~40 Hz
 
             if t_now - last_plot_t >= 0.1:  # update visualization at ~10 Hz
                 live.update(t_now, cte, heading_err, vel_err, mppi_cost,
@@ -549,17 +575,18 @@ def main() -> None:
         print(f"Exception: {e}")
         raise
     finally:
-        print("Sending stop command...")
-        if ser is not None and ser.is_open:
-            stop_pkt = build_packet(seq, 0, STEER_CENTER)
-            ser.write(stop_pkt)
-            time.sleep(0.05)
-            ser.close()
-        if vicon is not None:
-            vicon.close()
+        if not args.simulation:
+            print("Sending stop command...")
+            if ser is not None and ser.is_open:
+                stop_pkt = build_packet(seq, 0, STEER_CENTER)
+                ser.write(stop_pkt)
+                time.sleep(0.05)
+                ser.close()
+            if vicon is not None:
+                vicon.close()
         plt.ioff()
         plt.close("all")
-        print("Stopped. Port and Vicon connection closed.")
+        print("Stopped.")
 
 
 if __name__ == "__main__":
