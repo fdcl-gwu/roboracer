@@ -60,14 +60,13 @@ DELTA_MAX  =  0.44  # rad, max front-wheel steering angle
 # ── MPPI hyper-parameters ─────────────────────────────────────────────────────
 MPPI_DT          = 0.05   # prediction step size (s)
 MPPI_TEMPERATURE = 75.0   # must be same order-of-magnitude as the spread of rollout costs;
-                           # T=0.5 with these weights gave argmin behaviour → wild oscillations
-MPPI_NOISE       = np.array([0.40, 1.5])  # perturbation std for [delta, a]
+MPPI_NOISE       = np.array([0.4, 1.5])  # perturbation std for [delta, a]
 
 # Cost weights
 W_CTE     = 25.0   # cross-track error
 W_HEADING = 5.0   # heading error
 W_SPEED   = 1.0   # speed tracking
-W_STEER   = 2.0   # steering effort magnitude
+W_STEER   = 5.0   # steering effort magnitude
 
 MPPI_MIN_LOOKAHEAD_VEL = 1.5  # m/s — minimum arc speed for reference point spread
 
@@ -165,12 +164,24 @@ def load_raceline(path: str) -> Raceline:
                     arc_lengths=arc_lengths, total_length=total_length)
 
 
-def find_closest_raceline_point(state: VehicleState, raceline: Raceline) -> int:
+def find_closest_raceline_point(state: VehicleState, raceline: Raceline,
+                                prev_index: int = -1, window: int = 30) -> int:
+    n = len(raceline)
+    if prev_index < 0:
+        # First call: full search to initialise
+        indices = range(n)
+    else:
+        # Windowed search: only consider points near the last known index.
+        # This prevents the crossing point of a figure-8 (or any other
+        # location where two track segments are physically close) from
+        # pulling the tracker onto the wrong branch.
+        indices = ((prev_index + d) % n for d in range(-window, window + 1))
+
     best_index, best_dist = 0, float("inf")
-    for i in range(len(raceline)):
-        d = math.dist((state.x, state.y), raceline.points[i, :2])
-        if d < best_dist:
-            best_dist  = d
+    for i in indices:
+        dist = math.dist((state.x, state.y), raceline.points[i, :2])
+        if dist < best_dist:
+            best_dist  = dist
             best_index = i
     return best_index
 
@@ -509,7 +520,7 @@ def main() -> None:
                 yaw   = np.arctan2(R_vm[1, 0], R_vm[0, 0]) + args.yaw_correction
                 state = VehicleState(x=x, y=y, psi=yaw, v=v_est)
 
-            closest_index = find_closest_raceline_point(state, raceline)
+            closest_index = find_closest_raceline_point(state, raceline, prev_closest_index)
 
             # ── Lap counter ───────────────────────────────────────────────────
             if prev_closest_index != -1 and prev_closest_index > int(n_pts * 0.9):
