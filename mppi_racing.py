@@ -29,6 +29,8 @@ import struct
 import time
 from typing import Tuple
 
+import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
 import numpy as np
 import serial
 import vicon_tracker
@@ -69,6 +71,10 @@ W_STEER   = 5.0   # steering effort (smoothness)
 
 # ── Velocity estimator EMA factor ────────────────────────────────────────────
 VEL_ALPHA = 0.3   # blend fraction for new measurement; lower = smoother
+
+
+# ── Live plot settings ────────────────────────────────────────────────────────
+PLOT_WINDOW = 200  # rolling sample count for time-series axes
 
 
 # ── CRC-16 / CCITT ───────────────────────────────────────────────────────────
@@ -163,6 +169,24 @@ def find_closest_raceline_point(state: VehicleState, raceline: Raceline) -> int:
 
 
 # ── MPPI solver ───────────────────────────────────────────────────────────────
+def _rollout_sequence(state: VehicleState, sequence: np.ndarray,
+                      horizon: int) -> np.ndarray:
+    """Simulate the weighted-average control sequence forward from the current state."""
+    xs = [state.x]
+    ys = [state.y]
+    px, py, ppsi, pv = state.x, state.y, state.psi, state.v
+    for k in range(horizon):
+        d  = float(np.clip(sequence[k, 0], -DELTA_MAX, DELTA_MAX))
+        a  = float(np.clip(sequence[k, 1],  MAX_DECEL,  MAX_ACCEL))
+        px   += pv * math.cos(ppsi) * MPPI_DT
+        py   += pv * math.sin(ppsi) * MPPI_DT
+        ppsi  = normalize_angle(ppsi + pv / WHEELBASE * math.tan(d) * MPPI_DT)
+        pv    = float(np.clip(pv + a * MPPI_DT, 0.0, MAX_SPEED))
+        xs.append(px)
+        ys.append(py)
+    return np.column_stack([xs, ys])
+
+
 def mppi_step(
     state: VehicleState,
     raceline: Raceline,
@@ -170,8 +194,8 @@ def mppi_step(
     working_sequence: np.ndarray,   # (horizon, 2) warm-start from previous step
     n_rollouts: int,
     horizon: int,
-) -> Tuple[ControlInput, np.ndarray]:
-    """Return the optimal first-step control and the updated warm-start sequence."""
+) -> Tuple[ControlInput, np.ndarray, np.ndarray, float]:
+    """Return the optimal first-step control, updated warm-start sequence, planned (x,y) trajectory, and minimum rollout cost."""
 
     ref_vel_at_closest = raceline.points[closest_index, 2]
 
@@ -212,11 +236,15 @@ def mppi_step(
         costs += W_CTE * cte + W_HEADING * psi_err + W_SPEED * vel_err + W_STEER * delta**2
 
     # Steps 4 & 5: importance-weighted mixture
-    costs -= costs.min()
+    min_cost = float(costs.min())
+    costs -= min_cost
     weights = np.exp(-costs / MPPI_TEMPERATURE)
     weights /= weights.sum()
 
     new_sequence = np.einsum("k,kij->ij", weights, episodes)  # (H, 2)
+
+    # Planned trajectory from the optimal weighted-average sequence (before warm-start shift)
+    planned_traj = _rollout_sequence(state, new_sequence, horizon)
 
     # Step 6: extract first control, shift sequence for warm-start next iteration
     control = ControlInput(delta=float(new_sequence[0, 0]),
@@ -224,7 +252,7 @@ def mppi_step(
     new_sequence = np.roll(new_sequence, -1, axis=0)
     new_sequence[-1] = 0.0
 
-    return control, new_sequence
+    return control, new_sequence, planned_traj, min_cost
 
 
 # ── Control conversion ────────────────────────────────────────────────────────
@@ -242,6 +270,134 @@ def compute_throttle(v_ref: float, v_est: float,
     return int(np.clip(throttle, 0, max_throttle))
 
 
+# ── Live visualization ────────────────────────────────────────────────────────
+class LivePlot:
+    def __init__(self, raceline: Raceline):
+        plt.ion()
+        self.fig = plt.figure("MPPI Racing", figsize=(16, 9))
+        gs = gridspec.GridSpec(
+            3, 3, figure=self.fig,
+            height_ratios=[1, 2.5, 0.35],
+            hspace=0.50, wspace=0.35,
+        )
+
+        self.ax_cte   = self.fig.add_subplot(gs[0, 0])
+        self.ax_head  = self.fig.add_subplot(gs[0, 1])
+        self.ax_vel   = self.fig.add_subplot(gs[0, 2])
+        self.ax_map   = self.fig.add_subplot(gs[1, :2])
+        self.ax_cost  = self.fig.add_subplot(gs[1:, 2])
+        self.ax_steer = self.fig.add_subplot(gs[2, :2])
+
+        self.t_buf    = []
+        self.cte_buf  = []
+        self.head_buf = []
+        self.vel_buf  = []
+        self.cost_buf = []
+        self.t0 = None
+
+        # CTE
+        self.ax_cte.set_title("CTE (m)", fontsize=9)
+        self.ax_cte.set_xlabel("t (s)", fontsize=8)
+        self.ax_cte.tick_params(labelsize=7)
+        self.l_cte, = self.ax_cte.plot([], [], "r-", lw=1)
+
+        # Heading error
+        self.ax_head.set_title("Heading Error (rad)", fontsize=9)
+        self.ax_head.set_xlabel("t (s)", fontsize=8)
+        self.ax_head.tick_params(labelsize=7)
+        self.l_head, = self.ax_head.plot([], [], "g-", lw=1)
+
+        # Velocity error
+        self.ax_vel.set_title("Velocity Error (m/s)", fontsize=9)
+        self.ax_vel.set_xlabel("t (s)", fontsize=8)
+        self.ax_vel.tick_params(labelsize=7)
+        self.l_vel, = self.ax_vel.plot([], [], "b-", lw=1)
+
+        # Map
+        self.ax_map.set_title("Track View", fontsize=9)
+        self.ax_map.set_aspect("equal", adjustable="datalim")
+        self.ax_map.plot(
+            raceline.points[:, 0], raceline.points[:, 1],
+            "k--", lw=1, alpha=0.45, label="raceline",
+        )
+        self.l_traj, = self.ax_map.plot([], [], "b-",  lw=2, alpha=0.75, label="planned")
+        self.l_car,  = self.ax_map.plot([], [], "ro",  ms=8,             label="car")
+        self.ax_map.legend(loc="upper right", fontsize=7)
+        self.ax_map.tick_params(labelsize=7)
+
+        # Cost
+        self.ax_cost.set_title("MPPI Min Cost", fontsize=9)
+        self.ax_cost.set_xlabel("t (s)", fontsize=8)
+        self.ax_cost.tick_params(labelsize=7)
+        self.l_cost, = self.ax_cost.plot([], [], "m-", lw=1)
+
+        # Steering indicator — a square marker sliding on a track bar
+        self.ax_steer.set_title("Steering Input", fontsize=9)
+        self.ax_steer.set_xlim(-DELTA_MAX * 1.15, DELTA_MAX * 1.15)
+        self.ax_steer.set_ylim(-0.5, 0.5)
+        self.ax_steer.set_yticks([])
+        self.ax_steer.set_xlabel("δ (rad)   ◄ left · right ►", fontsize=8)
+        self.ax_steer.tick_params(labelsize=7)
+        self.ax_steer.axhspan(-0.08, 0.08, color="lightsteelblue", alpha=0.4)
+        self.ax_steer.axvline(0,          color="gray", lw=0.8, ls="--")
+        self.ax_steer.axvline(-DELTA_MAX, color="red",  lw=0.8, ls=":")
+        self.ax_steer.axvline( DELTA_MAX, color="red",  lw=0.8, ls=":")
+        self.l_steer, = self.ax_steer.plot([0], [0], "bs", ms=18, zorder=5)
+
+        self.fig.canvas.draw()
+        plt.pause(0.001)
+
+    def update(
+        self,
+        t_now: float,
+        cte: float,
+        head_err: float,
+        vel_err: float,
+        cost: float,
+        state: VehicleState,
+        planned_traj: np.ndarray,
+        delta: float,
+    ) -> None:
+        if self.t0 is None:
+            self.t0 = t_now
+        t = t_now - self.t0
+
+        self.t_buf.append(t)
+        self.cte_buf.append(abs(cte))
+        self.head_buf.append(abs(head_err))
+        self.vel_buf.append(vel_err)
+        self.cost_buf.append(cost)
+
+        if len(self.t_buf) > PLOT_WINDOW:
+            self.t_buf    = self.t_buf[-PLOT_WINDOW:]
+            self.cte_buf  = self.cte_buf[-PLOT_WINDOW:]
+            self.head_buf = self.head_buf[-PLOT_WINDOW:]
+            self.vel_buf  = self.vel_buf[-PLOT_WINDOW:]
+            self.cost_buf = self.cost_buf[-PLOT_WINDOW:]
+
+        ta = self.t_buf
+
+        self.l_cte.set_data(ta, self.cte_buf)
+        self.ax_cte.relim(); self.ax_cte.autoscale_view()
+
+        self.l_head.set_data(ta, self.head_buf)
+        self.ax_head.relim(); self.ax_head.autoscale_view()
+
+        self.l_vel.set_data(ta, self.vel_buf)
+        self.ax_vel.relim(); self.ax_vel.autoscale_view()
+
+        self.l_cost.set_data(ta, self.cost_buf)
+        self.ax_cost.relim(); self.ax_cost.autoscale_view()
+
+        self.l_car.set_data([state.x], [state.y])
+        self.l_traj.set_data(planned_traj[:, 0], planned_traj[:, 1])
+
+        self.l_steer.set_data([delta], [0])
+
+        self.fig.canvas.flush_events()
+        self.fig.canvas.draw_idle()
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -257,8 +413,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-throttle",    type=int,   default=200,  help="Maximum throttle command [0–2047]")
     p.add_argument("--rollouts",        type=int,   default=300,  help="MPPI rollout count")
     p.add_argument("--horizon",         type=int,   default=20,   help="MPPI horizon steps")
-    p.add_argument("--subject",         default="OriginsX",       help="Vicon subject name")
-    p.add_argument("--server",          default="192.168.10.1",   help="Vicon server IP")
+    p.add_argument("--subject",         default="UGV",       help="Vicon subject name")
+    p.add_argument("--server",          default="192.168.11.2",   help="Vicon server IP")
     return p.parse_args()
 
 
@@ -269,6 +425,8 @@ def main() -> None:
     raceline = load_raceline(args.raceline)
     n_pts = len(raceline)
     print(f"Loaded raceline: {n_pts} points, {raceline.total_length:.2f} m total")
+
+    live = LivePlot(raceline)
 
     object_name = f"{args.subject}@{args.server}"
 
@@ -337,12 +495,19 @@ def main() -> None:
             prev_closest_index = closest_index
 
             # ── MPPI step ─────────────────────────────────────────────────────
-            control, working_sequence = mppi_step(
+            control, working_sequence, planned_traj, mppi_cost = mppi_step(
                 state, raceline, closest_index, working_sequence,
                 args.rollouts, args.horizon,
             )
 
-            v_ref    = float(raceline.points[closest_index, 2])
+            v_ref       = float(raceline.points[closest_index, 2])
+            cte         = math.hypot(
+                state.x - raceline.points[closest_index, 0],
+                state.y - raceline.points[closest_index, 1],
+            )
+            heading_err = normalize_angle(state.psi - raceline.psis[closest_index])
+            vel_err     = v_est - v_ref
+
             steering = delta_to_steering(control.delta)
             throttle = compute_throttle(v_ref, v_est,
                                         args.speed_gain, args.speed_kp,
@@ -358,6 +523,9 @@ def main() -> None:
             pkt = build_packet(seq, throttle, steering)
             ser.write(pkt)
             seq += 1
+
+            live.update(t_now, cte, heading_err, vel_err, mppi_cost,
+                        state, planned_traj, control.delta)
 
             time.sleep(0.025)  # ~40 Hz command rate
 
@@ -375,6 +543,8 @@ def main() -> None:
             ser.close()
         if vicon is not None:
             vicon.close()
+        plt.ioff()
+        plt.close("all")
         print("Stopped. Port and Vicon connection closed.")
 
 
