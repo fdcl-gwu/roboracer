@@ -12,7 +12,7 @@ Key options:
     --raceline PATH       Path to raceline CSV  [raceline.csv]
     --port PORT           Serial port           [/dev/ttyUSB0]
     --laps N              Laps before stopping; 0 = run forever  [3]
-    --yaw-correction F    Yaw offset added to Vicon heading (rad) [0.3]
+    --yaw-correction F    Yaw offset added to Vicon heading (rad) [0.0]
     --speed-gain F        Feedforward gain: throttle_ff = speed_gain * v_ref  [20.0]
     --speed-kp F          Proportional gain on speed error  [5.0]
     --max-throttle N      Maximum throttle command  [200]
@@ -407,7 +407,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--raceline",        default="raceline.csv",   help="Path to raceline CSV")
     p.add_argument("--port",            default="/dev/ttyUSB0",   help="Serial port")
     p.add_argument("--laps",            type=int,   default=3,    help="Laps to complete; 0 = run forever")
-    p.add_argument("--yaw-correction",  type=float, default=3.44, help="Yaw offset added to Vicon heading (rad)")
+    p.add_argument("--yaw-correction",  type=float, default=0.0, help="Yaw offset added to Vicon heading (rad)")
     p.add_argument("--speed-gain",      type=float, default=20.0, help="Feedforward throttle gain (throttle_ff = gain * v_ref)")
     p.add_argument("--speed-kp",        type=float, default=5.0,  help="Proportional gain on speed error")
     p.add_argument("--max-throttle",    type=int,   default=200,  help="Maximum throttle command [0–2047]")
