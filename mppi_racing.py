@@ -66,7 +66,14 @@ MPPI_NOISE       = np.array([0.15, 1.5])  # perturbation std for [delta, a]
 W_CTE     = 5.0   # cross-track error
 W_HEADING = 2.0   # heading error
 W_SPEED   = 1.0   # speed tracking
-W_STEER   = 5.0   # steering effort (smoothness)
+W_STEER   = 5.0   # steering effort magnitude
+W_SMOOTH  = 3.0   # steering-rate penalty (change between consecutive steps)
+
+MPPI_MIN_LOOKAHEAD_VEL = 1.5  # m/s — minimum arc speed for reference point spread
+
+# Coordinate offset applied to raceline x to align with Vicon frame.
+# Also applied to car/trajectory display so the map stays consistent.
+RACELINE_X_OFFSET = 2.0
 
 
 # ── Velocity estimator EMA factor ────────────────────────────────────────────
@@ -146,7 +153,7 @@ def load_raceline(path: str) -> Raceline:
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            pts.append([float(row["x"]) + 2.0, float(row["y"]), float(row["v_ref"]) + 1.0])
+            pts.append([float(row["x"]) + RACELINE_X_OFFSET, float(row["y"]), float(row["v_ref"]) + 1.0])
             psi.append(float(row["psi"]))
             arcs.append(float(row["s"]))
     points      = np.array(pts,  dtype=float)
@@ -221,8 +228,11 @@ def mppi_step(
         rollout_states[:, 2]  = (rollout_states[:, 2] + math.pi) % (2 * math.pi) - math.pi
         rollout_states[:, 3]  = np.clip(rollout_states[:, 3] + a * MPPI_DT, 0.0, MAX_SPEED)
 
-        # Reference point at the predicted arc position of this horizon step
-        next_arc  = raceline.arc_lengths[closest_index] + (k + 1) * ref_vel_at_closest * MPPI_DT
+        # Reference point — use a minimum lookahead velocity so the reference
+        # points stay spatially spread even when the car is slow/stopped,
+        # preventing the MPPI gradient from collapsing near zero steering.
+        lookahead_vel = max(ref_vel_at_closest, MPPI_MIN_LOOKAHEAD_VEL)
+        next_arc  = raceline.arc_lengths[closest_index] + (k + 1) * lookahead_vel * MPPI_DT
         ref_index = raceline.index_at_arc_length(next_arc)
         ref_pos   = raceline.points[ref_index, :2]
         ref_psi   = raceline.psis[ref_index]
@@ -233,7 +243,8 @@ def mppi_step(
         psi_err = np.abs((rollout_states[:, 2] - ref_psi + math.pi) % (2 * math.pi) - math.pi)
         vel_err = np.abs(rollout_states[:, 3] - ref_vel)
 
-        costs += W_CTE * cte + W_HEADING * psi_err + W_SPEED * vel_err + W_STEER * delta**2
+        steer_rate = (delta - episodes[:, k-1, 0]) if k > 0 else delta
+        costs += W_CTE * cte + W_HEADING * psi_err + W_SPEED * vel_err + W_STEER * delta**2 + W_SMOOTH * steer_rate**2
 
     # Steps 4 & 5: importance-weighted mixture
     min_cost = float(costs.min())
@@ -389,8 +400,8 @@ class LivePlot:
         self.l_cost.set_data(ta, self.cost_buf)
         self.ax_cost.relim(); self.ax_cost.autoscale_view()
 
-        self.l_car.set_data([state.x], [state.y])
-        self.l_traj.set_data(planned_traj[:, 0], planned_traj[:, 1])
+        self.l_car.set_data([state.x + RACELINE_X_OFFSET], [state.y])
+        self.l_traj.set_data(planned_traj[:, 0] + RACELINE_X_OFFSET, planned_traj[:, 1])
 
         self.l_steer.set_data([delta], [0])
 
