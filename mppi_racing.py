@@ -576,7 +576,7 @@ def main() -> None:
                 state.y - raceline.points[closest_index, 1],
             )
             heading_err = normalize_angle(state.psi - raceline.psis[closest_index])
-            vel_err     = v_est - v_ref
+            vel_err     = v_ref - v_est
 
             # ── Command dispatch ──────────────────────────────────────────────
             if args.simulation:
