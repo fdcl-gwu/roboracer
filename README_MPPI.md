@@ -58,7 +58,7 @@ cd roboracer
     - If it is not called UGV, you will need to change the associated label before running the test scripts
 
 ### 6. Connect the car
-
+- & "C:\Program Files\usbipd-win\usbipd.exe" attach --wsl --busid 2-1
 - Plug the car's battery in and ensure that the SiK radios are connected
 - The light will stay solid blue if the radios are connected
 

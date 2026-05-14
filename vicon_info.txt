@@ -10,3 +10,5 @@ sign in un:Tompkins407
 vicon tracker 4.4
 
 correct ip = 192.168.10.1
+
+dell sudo pw = 1421

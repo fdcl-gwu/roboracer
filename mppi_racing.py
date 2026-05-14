@@ -66,7 +66,7 @@ MPPI_NOISE       = np.array([0.4, 1.5])  # perturbation std for [delta, a]
 W_CTE     = 25.0   # cross-track error
 W_HEADING = 5.0   # heading error
 W_SPEED   = 1.0   # speed tracking
-W_STEER   = 1.0   # steering rate (penalises delta change, not magnitude)
+W_STEER   = 0.005   # steering rate (penalises delta change, not magnitude)
 
 MPPI_MIN_LOOKAHEAD_VEL = 1.5  # m/s — minimum arc speed for reference point spread
 

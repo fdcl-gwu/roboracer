@@ -319,7 +319,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--max-throttle',   type=int,   default=200, help='Maximum throttle command')
     p.add_argument('--horizon',        type=int,   default=20,  help='MPC horizon steps')
     p.add_argument('--mpc-dt',         type=float, default=0.05,help='MPC prediction step size (s)')
-    p.add_argument('--subject',        default='UGV',           help='Vicon subject name')
+    p.add_argument('--subject',        default='OriginsX',      help='Vicon subject name')
     p.add_argument('--server',         default='192.168.10.1',  help='Vicon server IP')
     return p.parse_args()
 
