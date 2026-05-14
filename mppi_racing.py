@@ -66,7 +66,7 @@ MPPI_NOISE       = np.array([0.4, 1.5])  # perturbation std for [delta, a]
 W_CTE     = 25.0   # cross-track error
 W_HEADING = 5.0   # heading error
 W_SPEED   = 1.0   # speed tracking
-W_STEER   = 5.0   # steering effort magnitude
+W_STEER   = 1.0   # steering rate (penalises delta change, not magnitude)
 
 MPPI_MIN_LOOKAHEAD_VEL = 1.5  # m/s — minimum arc speed for reference point spread
 
@@ -152,7 +152,7 @@ def load_raceline(path: str) -> Raceline:
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            pts.append([float(row["x"]) + RACELINE_X_OFFSET, float(row["y"]), float(row["v_ref"]) + 1.0])
+            pts.append([float(row["x"]) + RACELINE_X_OFFSET, float(row["y"]), float(row["v_ref"])])
             psi.append(float(row["psi"]))
             arcs.append(float(row["s"]))
     points      = np.array(pts,  dtype=float)
@@ -212,6 +212,7 @@ def mppi_step(
     working_sequence: np.ndarray,   # (horizon, 2) warm-start from previous step
     n_rollouts: int,
     horizon: int,
+    last_delta: float = 0.0,
 ) -> Tuple[ControlInput, np.ndarray, np.ndarray, float]:
     """Return the optimal first-step control, updated warm-start sequence, planned (x,y) trajectory, and minimum rollout cost."""
 
@@ -228,6 +229,7 @@ def mppi_step(
     rollout_states = np.full((n_rollouts, 4),
                              [state.x, state.y, state.psi, state.v])  # (K, 4)
     costs = np.zeros(n_rollouts)
+    prev_delta = np.full(n_rollouts, last_delta)
 
     for k in range(horizon):
         delta = episodes[:, k, 0]
@@ -246,12 +248,14 @@ def mppi_step(
         ref_psi   = raceline.psis[ref_index]
         ref_vel   = raceline.points[ref_index, 2]
 
-        cte     = np.hypot(rollout_states[:, 0] - ref_pos[0],
-                           rollout_states[:, 1] - ref_pos[1])
-        psi_err = np.abs((rollout_states[:, 2] - ref_psi + math.pi) % (2 * math.pi) - math.pi)
-        vel_err = np.abs(rollout_states[:, 3] - ref_vel)
+        cte       = np.hypot(rollout_states[:, 0] - ref_pos[0],
+                             rollout_states[:, 1] - ref_pos[1])
+        psi_err   = np.abs((rollout_states[:, 2] - ref_psi + math.pi) % (2 * math.pi) - math.pi)
+        vel_err   = np.abs(rollout_states[:, 3] - ref_vel)
+        delta_dot = delta - prev_delta
 
-        costs += W_CTE * cte + W_HEADING * psi_err + W_SPEED * vel_err + W_STEER * delta**2
+        costs += W_CTE * cte + W_HEADING * psi_err + W_SPEED * vel_err + W_STEER * delta_dot**2
+        prev_delta = delta
 
     # Steps 4 & 5: importance-weighted mixture
     min_cost = float(costs.min())
@@ -478,6 +482,7 @@ def main() -> None:
             print("Simulation mode — no Vicon or radio connection.")
 
         working_sequence = np.zeros((args.horizon, 2))
+        last_delta = 0.0
 
         # Velocity estimation (real mode only)
         prev_x, prev_y, prev_t = None, None, None
@@ -537,8 +542,9 @@ def main() -> None:
             # ── MPPI step ─────────────────────────────────────────────────────
             control, working_sequence, planned_traj, mppi_cost = mppi_step(
                 state, raceline, closest_index, working_sequence,
-                args.rollouts, args.horizon,
+                args.rollouts, args.horizon, last_delta,
             )
+            last_delta = control.delta
 
             v_ref       = float(raceline.points[closest_index, 2])
             cte         = math.hypot(
