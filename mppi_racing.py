@@ -255,12 +255,6 @@ def mppi_step(
     costs = np.zeros(n_rollouts)
     prev_delta = np.full(n_rollouts, last_delta)
 
-    # Each rollout tracks its own arc position so the reference point stays
-    # ahead of where that rollout actually is.  A corner-cutting rollout ends
-    # up far from its own reference (which advanced along the true arc at the
-    # rollout's speed), making the shortcut genuinely costly.
-    rollout_arcs = np.full(n_rollouts, raceline.arc_lengths[closest_index])
-
     for k in range(horizon):
         delta = episodes[:, k, 0]
         a     = episodes[:, k, 1]
@@ -272,15 +266,14 @@ def mppi_step(
         rollout_states[:, 2]  = (rollout_states[:, 2] + math.pi) % (2 * math.pi) - math.pi
         rollout_states[:, 3]  = np.clip(rollout_states[:, 3] + a * MPPI_DT, 0.0, MAX_SPEED)
 
-        # Advance each rollout's arc position by its own speed × dt
-        rollout_arcs += np.maximum(rollout_states[:, 3], lookahead_vel) * MPPI_DT
-        ref_indices   = raceline.indices_at_arc_lengths(rollout_arcs)
-        ref_pos       = raceline.points[ref_indices, :2]   # (K, 2)
-        ref_psi       = raceline.psis[ref_indices]          # (K,)
-        ref_vel       = raceline.points[ref_indices, 2]     # (K,)
+        next_arc  = raceline.arc_lengths[closest_index] + (k + 1) * lookahead_vel * MPPI_DT
+        ref_index = raceline.index_at_arc_length(next_arc)
+        ref_pos   = raceline.points[ref_index, :2]
+        ref_psi   = raceline.psis[ref_index]
+        ref_vel   = raceline.points[ref_index, 2]
 
-        cte       = np.hypot(rollout_states[:, 0] - ref_pos[:, 0],
-                             rollout_states[:, 1] - ref_pos[:, 1])
+        cte       = np.hypot(rollout_states[:, 0] - ref_pos[0],
+                             rollout_states[:, 1] - ref_pos[1])
         psi_err   = np.abs((rollout_states[:, 2] - ref_psi + math.pi) % (2 * math.pi) - math.pi)
         vel_err   = np.abs(rollout_states[:, 3] - ref_vel)
         delta_dot = delta - prev_delta
