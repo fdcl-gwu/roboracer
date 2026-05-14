@@ -72,7 +72,7 @@ MPPI_MIN_LOOKAHEAD_VEL = 1.5  # m/s — minimum arc speed for reference point sp
 
 # Coordinate offset applied to raceline x to align with Vicon frame.
 # Also applied to car/trajectory display so the map stays consistent.
-RACELINE_X_OFFSET = 2.0
+RACELINE_X_OFFSET = 0.0
 
 
 # ── Velocity estimator EMA factor ────────────────────────────────────────────
@@ -184,6 +184,25 @@ def find_closest_raceline_point(state: VehicleState, raceline: Raceline,
             best_dist  = dist
             best_index = i
     return best_index
+
+
+def initialize_sequence_from_raceline(
+    closest_index: int,
+    raceline: Raceline,
+    v: float,
+    horizon: int,
+) -> np.ndarray:
+    """Seed the MPPI warm-start using raceline curvature instead of zeros."""
+    seq = np.zeros((horizon, 2))
+    lookahead_vel = max(v, MPPI_MIN_LOOKAHEAD_VEL)
+    s0 = raceline.arc_lengths[closest_index]
+    for k in range(horizon):
+        idx_a = raceline.index_at_arc_length(s0 + k * lookahead_vel * MPPI_DT)
+        idx_b = raceline.index_at_arc_length(s0 + (k + 1) * lookahead_vel * MPPI_DT)
+        dpsi = normalize_angle(raceline.psis[idx_b] - raceline.psis[idx_a])
+        delta = math.atan2(WHEELBASE * dpsi, MPPI_DT * lookahead_vel)
+        seq[k, 0] = float(np.clip(delta, -DELTA_MAX, DELTA_MAX))
+    return seq
 
 
 # ── MPPI solver ───────────────────────────────────────────────────────────────
@@ -526,6 +545,11 @@ def main() -> None:
                 state = VehicleState(x=x, y=y, psi=yaw, v=v_est)
 
             closest_index = find_closest_raceline_point(state, raceline, prev_closest_index)
+
+            if prev_closest_index == -1:
+                working_sequence = initialize_sequence_from_raceline(
+                    closest_index, raceline, state.v, args.horizon
+                )
 
             # ── Lap counter ───────────────────────────────────────────────────
             if prev_closest_index != -1 and prev_closest_index > int(n_pts * 0.9):
