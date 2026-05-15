@@ -80,15 +80,42 @@ A pre-computed raceline CSV provides the reference:
 \[
 \mathcal{R} = \{(X_i,\, Y_i,\, \psi_i,\, v_{\text{ref},i},\, s_i)\}_{i=0}^{M-1}
 \]
-where $s_i$ is the cumulative arc length at waypoint $i$.  Given the car's
-current position, the \textbf{closest waypoint index} $i^*$ is found by
-exhaustive nearest-neighbour search.  Lookahead reference points at horizon
-step $k$ are obtained by projecting $k$ steps forward in arc length:
+where $s_i$ is the cumulative arc length at waypoint $i$.
+
+\subsection{Windowed Closest-Point Search}
+
+The \textbf{closest waypoint index} $i^*$ is the nearest neighbour of the car's
+position $(X, Y)$ in the raceline.  A pure exhaustive search is correct but
+fails at \emph{self-intersections} of the raceline: on the figure-8 track the
+loops cross at a single physical point that maps to two different arc lengths,
+and an exhaustive search can flip between branches when the car is near the
+crossing.
+
+To prevent this, after the first call the search is restricted to a window of
+$\pm 100$ indices around the previous $i^*$.  This forces monotonic progress
+along the arc and eliminates the crossing ambiguity at the cost of requiring
+that the car never moves more than one window's worth of arc length between
+control steps (at $\Delta t = 25$\,ms and 100 indices $\approx 2.9$\,m of arc,
+this corresponds to speeds well above $v_{\max}$).
+
+\subsection{Lookahead}
+
+Lookahead reference points at horizon step $k$ are obtained by projecting $k$
+steps forward in arc length:
 \[
-s_{\text{ref}}(k) = s_{i^*} + k \cdot v_{\text{ref},i^*} \cdot \Delta t
+s_{\text{ref}}(k) = s_{i^*} + k \cdot v_{\text{look}} \cdot \Delta t,
+\qquad
+v_{\text{look}} = \max(\hat{v},\; v_{\text{look,min}})
 \]
-and then looking up the corresponding raceline index via binary search on the
-arc-length array.
+where $\hat{v}$ is the current (estimated) car speed and
+$v_{\text{look,min}} = 0.8$\,m\,s$^{-1}$ is a floor that keeps the lookahead
+non-degenerate when stationary.  Looking the reference up at the
+\emph{car's actual speed} rather than the \emph{reference speed}
+$v_{\text{ref},i^*}$ keeps the reference spread short during startup
+acceleration; if the slow car were given a reference that already extends
+several metres ahead, the controller would chase a point it cannot
+physically reach in the horizon, biasing the solution toward unrealistic
+inputs.  Once the car is up to speed the two choices coincide.
 
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -139,7 +166,10 @@ be the current nominal (warm-start) sequence and $\lambda > 0$ the temperature.
 \bm{\varepsilon}^{(k)} \sim \mathcal{N}(\bm{0},\, \bm{\Sigma}), \qquad k = 1,\dots,K
 \]
 with $\bm{\Sigma} = \mathrm{diag}(\sigma_\delta^2, \sigma_a^2)$,
-$\sigma_\delta = 0.15\,\text{rad}$, $\sigma_a = 1.5\,\text{m\,s}^{-2}$.
+$\sigma_\delta = 0.3\,\text{rad}$, $\sigma_a = 1.5\,\text{m\,s}^{-2}$.  Note that
+$\sigma_\delta$ is comparable to $\delta_{\max} = 0.44$\,rad: by 1$\sigma$ the
+samples already span most of the steering range, ensuring the corner-radius
+inputs needed on the figure-8 are present in the rollout cloud.
 
 \paragraph{Step 2 -- Form and clip perturbed sequences.}
 \[
@@ -179,12 +209,22 @@ c(\bm{x}_t, \bm{u}_t) =
   W_{\text{CTE}} \underbrace{\left\|\bm{p}_t - \bm{p}_{\text{ref}}(t)\right\|_2}_{\text{cross-track error}}
 + W_h \underbrace{\left|\psi_t - \psi_{\text{ref}}(t)\right|_{\pi}}_{\text{heading error}}
 + W_v \underbrace{\left|v_t - v_{\text{ref}}(t)\right|}_{\text{speed error}}
-+ W_s\, \delta_t^2
++ W_s\, \underbrace{(\delta_t - \delta_{t-1})^2}_{\text{steering rate}}
 \]
 
 where $|\cdot|_\pi$ denotes the wrapped absolute angle difference and
 $\bm{p}_{\text{ref}}(t)$, $\psi_{\text{ref}}(t)$, $v_{\text{ref}}(t)$ are
 looked up from the raceline at the projected arc position.
+
+A subtle but important detail is that the steering term penalises the
+\emph{rate} of change $(\delta_t - \delta_{t-1})^2$ rather than the absolute
+magnitude $\delta_t^2$.  Penalising the magnitude would discourage holding
+the sustained $\delta \approx 0.21$\,rad required to follow the figure-8 loops
+(radius $R \approx 1.5$\,m, $\delta_{\text{steady}} = \arctan(L/R)$), causing
+systematic understeer.  Penalising the rate suppresses bang-bang jitter
+without fighting steady cornering inputs.  The previous control $\delta_{t-1}$
+is seeded from the actual last applied input at step $t=0$ rather than from
+zero, anchoring the rate term to physical continuity.
 
 \medskip
 \begin{center}
@@ -192,13 +232,64 @@ looked up from the raceline at the projected arc position.
 \toprule
 Weight & Value & Meaning \\
 \midrule
-$W_{\text{CTE}}$ & 5.0 & Penalise lateral deviation from the raceline \\
-$W_h$            & 2.0 & Penalise heading misalignment \\
-$W_v$            & 1.0 & Penalise speed error relative to $v_{\text{ref}}$ \\
-$W_s$            & 5.0 & Penalise harsh steering inputs \\
+$W_{\text{CTE}}$ & 23.0   & Penalise lateral deviation from the raceline \\
+$W_h$            & 20.0   & Penalise heading misalignment \\
+$W_v$            & 0.5    & Penalise speed error relative to $v_{\text{ref}}$ \\
+$W_s$            & 0.0005 & Penalise steering rate $(\delta_t - \delta_{t-1})^2$ \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+Other implementation parameters:
+
+\medskip
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Parameter & Value & Meaning \\
+\midrule
+$K$              & 300    & Number of rollouts per control step \\
+$N$              & 20     & Horizon length (steps) \\
+$\Delta t$       & 0.025\,s & Prediction step size (matches main loop period) \\
+$\lambda$        & 20.0   & MPPI temperature \\
+$\sigma_\delta$  & 0.3\,rad & Steering perturbation std \\
+$\sigma_a$       & 1.5\,m\,s$^{-2}$ & Acceleration perturbation std \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Warm-Start from Raceline Curvature}
+
+On the very first control iteration the nominal sequence $\bm{U}$ has no prior
+solve to inherit from.  Initialising it to zero biases all rollouts toward
+straight-line motion, which catastrophically lags the controller through the
+first corner.  Instead, the initial $\bm{U}$ is derived directly from the
+raceline geometry.
+
+For each horizon step $k$, two arc-length positions are sampled,
+$s_k = s_{i^*} + k v_{\text{look}} \Delta t$ and
+$s_{k+1} = s_{i^*} + (k+1) v_{\text{look}} \Delta t$, with corresponding
+raceline headings $\psi_k$ and $\psi_{k+1}$.  Inverting the bicycle yaw-rate
+equation~\eqref{eq:psidot},
+\[
+\dot{\psi} = \frac{v}{L}\tan\delta
+\;\;\Longrightarrow\;\;
+\delta_k = \mathrm{atan2}\!\left(L \cdot (\psi_{k+1} - \psi_k)_{\pi},\; v_{\text{look}}\,\Delta t\right)
+\]
+gives the steering input that would follow the raceline arc segment.  The
+\texttt{atan2} form is used over $\arctan$ to avoid division-by-zero at small
+$v_{\text{look}}$.  The acceleration component is left at zero; the speed
+controller catches up within the first second.
+
+\subsection{Velocity Tracking Change}
+
+Earlier iterations of MPPI used $v_{\text{ref},i^*}$ to set the lookahead
+spread.  At startup this caused the reference to leap several metres ahead of
+a stationary car, producing rollouts that all tried to teleport rather than
+accelerate.  The current code uses $v_{\text{look}} = \max(\hat{v}, 0.8)$,
+which scales the reference spread with actual progress.  This and matching
+$\Delta t = 0.025$\,s to the main loop period (it was previously 0.05\,s) were
+the two largest single-parameter improvements during development.
 
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -282,20 +373,71 @@ The zero reference for $\delta$ and $a$ means the solver penalises control effor
 (regularisation), keeping the trajectory smooth.  The terminal cost uses the
 same structure with $\bm{W}_N = \mathrm{diag}(W_{\text{CTE}}, W_{\text{CTE}}, W_h, W_v)$.
 
+Note that LINEAR\_LS penalises the \emph{absolute magnitude} $\delta_k^2$ rather
+than the rate $(\delta_k - \delta_{k-1})^2$ used in MPPI.  Encoding a rate
+penalty cleanly in LINEAR\_LS would require augmenting the state with the
+previous control; in practice the RTI warm-start provides enough temporal
+smoothness on its own that this has not been necessary.
+
 \medskip
 \begin{center}
 \begin{tabular}{lll}
 \toprule
 Weight & Value & Meaning \\
 \midrule
-$W_{\text{CTE}}$ & 5.0 & Position tracking (applied to both $X$ and $Y$ residuals) \\
-$W_h$            & 2.0 & Heading tracking \\
-$W_v$            & 1.0 & Speed tracking \\
-$W_s$            & 5.0 & Steering regularisation \\
-$W_a$            & 0.1 & Acceleration regularisation \\
+$W_{\text{CTE}}$ & 23.0 & Position tracking (applied to both $X$ and $Y$ residuals) \\
+$W_h$            & 20.0 & Heading tracking \\
+$W_v$            & 0.5  & Speed tracking \\
+$W_s$            & 1.0  & Steering regularisation (absolute magnitude) \\
+$W_a$            & 0.1  & Acceleration regularisation \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+Other implementation parameters:
+
+\medskip
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Parameter & Value & Meaning \\
+\midrule
+$N$        & 20       & Horizon length (steps) \\
+$\Delta t$ & 0.025\,s & Prediction step (matches main loop period) \\
+QP solver  & HPIPM PC & Partial-condensing interior point \\
+NLP solver & SQP-RTI  & One linearisation per control step \\
+Integrator & ERK4     & Explicit Runge--Kutta 4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Reference Heading Unwrapping}
+
+The continuous-time dynamics do not wrap $\psi$ --- a discontinuity at $\pm\pi$
+would break the linearisation that SQP-RTI relies on.  The raceline's
+$\psi_{\text{ref}}$ values, however, are stored in $[-\pi, \pi]$ from
+\texttt{atan2}, and the figure-8 contains a $\pm\pi$ wrap roughly halfway
+through the loop.  Feeding a wrapped reference into a non-wrapping state model
+produces a huge residual at the wrap point.
+
+The MPC therefore \textbf{unwraps} the reference incrementally: starting from
+$\tilde{\psi}_0 = \psi_{\text{state}}$, each subsequent reference is built as
+\[
+\tilde{\psi}_{k+1} = \tilde{\psi}_k + \big(\psi_{\text{ref},k+1} - \tilde{\psi}_k\big)_\pi
+\]
+where $(\cdot)_\pi$ wraps an angle into $[-\pi, \pi]$.  This produces a
+continuous reference $\tilde{\psi}_k$ in $\mathbb{R}$ that stays close to the
+predicted $\psi_k$ trajectory throughout the horizon.
+
+\subsection{Warm-Start from Raceline Curvature}
+
+The same raceline-curvature initialisation used in MPPI is applied to the MPC
+solver on its first iteration, before any previous solve exists to warm-start
+from.  Stage inputs are seeded with
+$\delta_k = \mathrm{atan2}(L\,\Delta\psi_k,\; v_{\text{look}}\Delta t)$ and
+$a_k = 0$; stage states are seeded by walking along the raceline waypoints
+with the unwrapped reference heading.  Acados then propagates from this guess
+in subsequent solves via internal warm-starting.
 
 \subsection{SQP Real-Time Iteration (SQP-RTI)}
 
@@ -322,6 +464,114 @@ solution $\Delta\bm{U}^*$ is added to the warm start.
 Because the initial state changes only slightly between control steps (the car
 has moved 25\,ms worth), the warm-started trajectory is already close to the new
 optimum and one SQP step is sufficient to track it accurately.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{PID Baseline (Stanley-style)}
+
+\subsection{Conceptual Overview}
+
+The PID controller is the classical baseline against which MPPI and MPC are
+benchmarked.  Unlike the two predictive controllers, it has no internal model
+and no horizon: it produces a steering command directly from the
+\emph{current} cross-track and heading errors.  Structurally it is a
+\emph{Stanley-style} steering law, augmented with an integral term:
+\[
+\delta = -\big(K_h \psi_e \;+\; K_e e \;+\; K_{\dot e}\, \dot e \;+\; K_{\int} \!\!\int e\, dt\big)
+\]
+The overall negative sign converts a positive (left-of-track) lateral error
+into a right-steer command, given the sign convention of $\delta$ in the
+bicycle model.  All four gains are kept positive; flipping the sign of any
+single one would reverse the corresponding correction direction.
+
+\subsection{Signed Cross-Track Error}
+
+The plain Euclidean distance $\|\bm{p} - \bm{p}_{\text{ref}}\|$ used by MPPI
+and MPC for cost is unsigned and cannot indicate which side of the track the
+car is on.  PID needs a \textbf{signed} CTE to know which direction to
+correct.  Decomposing the position offset along the raceline's local frame,
+\[
+\hat{\bm{t}}_{\text{ref}} = (\cos\psi_{\text{ref}},\, \sin\psi_{\text{ref}}),
+\qquad
+\hat{\bm{n}}_{\text{ref}} = (-\sin\psi_{\text{ref}},\, \cos\psi_{\text{ref}}),
+\]
+gives the signed CTE as the projection of the offset onto the left-normal:
+\[
+e = (\bm{p} - \bm{p}_{\text{ref}}) \cdot \hat{\bm{n}}_{\text{ref}}
+  = -\sin\psi_{\text{ref}}\,(X - X_{\text{ref}}) + \cos\psi_{\text{ref}}\,(Y - Y_{\text{ref}})
+\]
+By convention $e > 0$ when the car is to the \emph{left} of the track.
+
+\subsection{Derivative and Integral Terms}
+
+The derivative term $\dot e$ is approximated by a finite difference between
+successive control steps,
+\[
+\dot e \approx \frac{e_t - e_{t-1}}{\Delta t},
+\]
+with $\Delta t$ clamped to $[10^{-6}, 0.2]\,\text{s}$ to prevent first-step
+spikes and stale-frame outliers from dominating the derivative.
+
+The integral term $\int e\, dt$ is implemented as a discrete sum with
+\textbf{clamping anti-windup}: the running integral is bounded so that the
+integral contribution to $\delta$ cannot exceed a configurable cap
+$I_{\max}$, and the integral is frozen entirely while the total steering
+command is saturated at $\pm\delta_{\max}$.  The combination prevents the
+integrator from accumulating during corner saturation and then overshooting
+on exit.
+
+\subsection{Heading Error Term and Stanley Analogue}
+
+The Stanley controller in its original form is
+\[
+\delta = \psi_e + \arctan\!\left(\frac{k\, e}{v}\right).
+\]
+For small CTE the second term linearises to $k\,e/v$, motivating
+$K_e \approx k/v$ as a starting gain.  At $v \approx 4.5\,\text{m/s}$ with
+$k = 2$ this gives $K_e \approx 0.44$\,rad/m.  The heading term has gain
+$K_h = 1.0$ (unit gain) so that small heading errors map directly to
+proportional steering corrections; the closed-loop heading time constant of
+this term is $\tau_h = L / (v K_h)$, which at $v = 4.5\,\text{m/s}$ evaluates
+to $\tau_h \approx 72\,\text{ms}$.
+
+\subsection{Parameters}
+
+Default tuning (modifiable from the CLI):
+
+\medskip
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Gain & Value & Meaning \\
+\midrule
+$K_h$       & 0.6  & Heading-error P gain (rad/rad) \\
+$K_e$       & 0.6  & Cross-track P gain (rad/m) \\
+$K_{\dot e}$ & 0.05 & Cross-track D gain (rad$\cdot$s/m) \\
+$K_{\int}$  & 0.0  & Cross-track I gain (rad/(m$\cdot$s)) \\
+$I_{\max}$  & 0.10\,rad & Anti-windup cap on integral contribution \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The integral gain is left at zero by default: the figure-8 is symmetric and
+on a well-tuned PD the steady-state offset is negligible.  $K_{\int}$ is only
+introduced when persistent one-sided drift is observed (e.g. from chassis
+misalignment).
+
+\subsection{Tuning Procedure}
+
+Gains are tuned in a fixed order to isolate one closed-loop effect at a time:
+
+\begin{enumerate}
+  \item Set $K_e, K_{\dot e}, K_{\int}$ to zero; tune $K_h$ alone on a straight
+        until heading error settles below $0.1$\,rad with no oscillation.
+  \item Add $K_e$ to remove lateral drift; expect to revisit $K_h$ once $K_e$
+        is active because the two terms partially compensate each other.
+  \item Add $K_{\dot e}$ if the closed loop is now oscillatory but
+        non-divergent.  D-gain is bounded above by measurement-noise
+        amplification: roughly $K_{\dot e} < K_e / 2$ at $40$\,Hz.
+  \item Add $K_{\int}$ only if a persistent one-sided offset remains.
+\end{enumerate}
 
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -434,5 +684,76 @@ low-speed cruising through near-limit cornering.  Both MPPI and the MPC
 formulation can accommodate it without structural changes: MPPI requires only
 that the forward model be evaluable; MPC requires additionally that $F_y$ is
 differentiable, which the smooth Pacejka formula satisfies.
+
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experimental Results}
+
+All three controllers are benchmarked on the same figure-8 raceline (loop
+radius $R \approx 1.5$\,m, total arc length $\approx 17.3$\,m, constant
+reference speed $v_{\text{ref}} = 4.5$\,m\,s$^{-1}$) over $10$ laps each.
+Errors are accumulated per control step from the lap start to the lap end
+and reported as lap-averaged RMS values.
+
+\subsection{Metrics}
+
+For each lap $\ell$, with $T_\ell$ samples:
+\[
+\text{RMS}_e^{(\ell)} = \sqrt{\frac{1}{T_\ell}\sum_{t=1}^{T_\ell} e_t^2},
+\qquad
+\text{RMS}_{\psi_e}^{(\ell)} = \sqrt{\frac{1}{T_\ell}\sum_{t=1}^{T_\ell} \psi_{e,t}^2},
+\qquad
+\text{RMS}_{v_e}^{(\ell)} = \sqrt{\frac{1}{T_\ell}\sum_{t=1}^{T_\ell} (v_t - v_{\text{ref},t})^2}.
+\]
+
+Aggregate metrics are the means and standard deviations over $\ell = 1, \dots, 10$.
+
+\subsection{Results}
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Controller & $|e|_{\text{RMS}}$ (m) & $|\psi_e|_{\text{RMS}}$ (rad) & $|v_e|_{\text{RMS}}$ (m/s) & Notes \\
+\midrule
+PID  &  --- & --- & --- & Baseline \\
+MPPI &  --- & --- & --- & 300 rollouts, $\lambda = 20$ \\
+MPC  &  --- & --- & --- & SQP-RTI, ERK4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Relative differences (with PID as the reference):
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Controller & $\Delta |e|$ vs PID & $\Delta |\psi_e|$ vs PID & $\Delta |v_e|$ vs PID \\
+\midrule
+MPPI & --- & --- & --- \\
+MPC  & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Discussion}
+
+\emph{(To be filled in once the 10-lap runs are collected.)} Expected qualitative
+findings, to be confirmed by the data:
+
+\begin{itemize}
+  \item \textbf{PID} should have the largest $|e|_{\text{RMS}}$, especially
+        through corner entries and exits, because it reacts only to current
+        error and cannot anticipate the curvature change.
+  \item \textbf{MPPI} should outperform PID by virtue of horizon-aware planning,
+        but show non-zero step-to-step variation in $\delta$ because the
+        weighted-average update is stochastic.  Steering RMS should be slightly
+        higher than MPC.
+  \item \textbf{MPC} should produce the smoothest steering trace and the
+        smallest tracking errors, at the cost of compile-time complexity and
+        a (one-time) solver build step.
+  \item All three should track $v_{\text{ref}}$ similarly, since the
+        longitudinal channel is governed by the same feedforward-plus-P
+        throttle controller in every case.
+\end{itemize}
 
 \end{document}

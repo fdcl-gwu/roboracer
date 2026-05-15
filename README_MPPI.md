@@ -99,15 +99,53 @@ python3 mppi_racing.py [options]
 |---|---|---|
 | `--raceline PATH` | `raceline.csv` | Path to raceline CSV |
 | `--port PORT` | `/dev/ttyUSB0` | Serial port to car |
-| `--laps N` | `1` | Laps before stopping; `0` = run forever |
-| `--yaw-correction F` | `0.3` | Yaw offset added to Vicon heading (rad) |
+| `--laps N` | `3` | Laps before stopping; `0` = run forever |
+| `--yaw-correction F` | `0.0` | Yaw offset added to Vicon heading (rad) |
 | `--speed-gain F` | `20.0` | Feedforward throttle gain (`throttle_ff = gain × v_ref`) |
 | `--speed-kp F` | `5.0` | Proportional gain on speed error |
 | `--max-throttle N` | `200` | Maximum throttle command (hard cap) |
 | `--rollouts N` | `300` | MPPI rollout count |
 | `--horizon N` | `20` | MPPI horizon steps |
 | `--subject NAME` | `UGV` | Vicon subject name |
-| `--server IP` | `192.168.10.1` | Vicon server IP |
+| `--server IP` | `192.168.11.2` | Vicon server IP |
+| `--simulation` | (flag) | Run without Vicon or radio — simulate the bicycle model in-process |
+| `--sim-v0 F` | `0.0` | Initial speed (m/s) when running with `--simulation` |
+
+---
+
+## Simulation mode
+
+Setting `--simulation` skips the Vicon connection and serial port, and instead
+integrates the kinematic bicycle model in the main loop using the MPPI's own
+output as the applied control. The live dashboard is identical to the
+hardware view, making the simulator useful for tuning weights and verifying
+behaviour before bringing the car to the lab.
+
+```bash
+python3 mppi_racing.py --simulation --raceline figure_eight.csv --laps 3
+```
+
+---
+
+## MPPI hyper-parameters (in source)
+
+These are not CLI arguments because changing any of them is unlikely day-to-day; edit the constants at the top of `mppi_racing.py` if you need to.
+
+| Constant | Value | Effect of increasing |
+|---|---|---|
+| `MPPI_DT` | `0.025 s` | Prediction step — must match the main loop period |
+| `MPPI_TEMPERATURE` | `20.0` | Higher → softer mixture, lower → greedier (pick top rollouts only) |
+| `MPPI_NOISE` (δ, a) | `(0.3, 1.5)` | Steering and acceleration perturbation std-devs |
+| `W_CTE` | `23.0` | Tighter lateral tracking; may amplify steering activity |
+| `W_HEADING` | `20.0` | Faster heading correction; helps catch corner entries |
+| `W_SPEED` | `0.5` | Closer speed tracking (longitudinal axis is mostly the throttle P-controller) |
+| `W_STEER` | `0.0005` | Penalises **steering rate** $(\delta_t-\delta_{t-1})^2$, **not** absolute magnitude. Keeps the input smooth without fighting sustained corners |
+| `MPPI_MIN_LOOKAHEAD_VEL` | `0.8 m/s` | Floor on the lookahead arc spread (matters at startup) |
+
+Notes:
+
+- **Velocity-based lookahead.** The reference points used inside the rollouts are projected forward at the *car's actual speed* $\max(\hat{v}, 0.8)$ rather than the reference speed. This prevents a stationary car from chasing reference points it cannot reach.
+- **Raceline-curvature warm start.** On the first control iteration the nominal sequence is seeded from raceline curvature: $\delta_k = \mathrm{atan2}(L\cdot\Delta\psi_k,\; v\cdot\Delta t)$. Without this, the controller spends the first 1–2 seconds correcting a "go straight" prior.
 
 ---
 

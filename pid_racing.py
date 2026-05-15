@@ -93,8 +93,8 @@ DELTA_MAX  =  0.44  # rad, max front-wheel steering angle
 #
 #   K_CTE_I = 0.0   →  Start at zero.  Add only to fix persistent one-sided drift.
 
-K_HEADING = 1.0    # rad / rad
-K_CTE     = 0.44   # rad / m
+K_HEADING = 0.6    # rad / rad
+K_CTE     = 0.6   # rad / m
 K_CTE_D   = 0.05   # rad·s / m
 K_CTE_I   = 0.0    # rad / (m·s)
 I_MAX     = 0.10   # rad  — maximum integral steering contribution (anti-windup cap)

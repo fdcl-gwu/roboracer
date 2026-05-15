@@ -60,12 +60,12 @@ DELTA_MAX  =  0.44  # rad, max front-wheel steering angle
 # ── MPPI hyper-parameters ─────────────────────────────────────────────────────
 MPPI_DT          = 0.025  # prediction step size (s) — must match the main loop period
 MPPI_TEMPERATURE = 20.0   # must be same order-of-magnitude as the spread of rollout costs;
-MPPI_NOISE       = np.array([0.2, 1.5])  # perturbation std for [delta, a]
+MPPI_NOISE       = np.array([0.3, 1.5])  # perturbation std for [delta, a]
  
 # Cost weights
-W_CTE     = 25.0   # cross-track error
-W_HEADING = 15.0   # heading error
-W_SPEED   = 0.0   # speed tracking
+W_CTE     = 23.0   # cross-track error
+W_HEADING = 20.0   # heading error
+W_SPEED   = 0.5   # speed tracking
 W_STEER   = 0.0005   # steering rate (penalises delta change, not magnitude)
  
 MPPI_MIN_LOOKAHEAD_VEL = 0.8  # m/s — minimum arc speed for reference point spread

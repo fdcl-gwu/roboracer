@@ -12,7 +12,8 @@ Mirrors `mppi_racing.py` in structure — same Vicon interface, same serial prot
 | Algorithm | Stochastic sampling (300 rollouts) | Deterministic NMPC, SQP-RTI |
 | Dynamics | Forward Euler + velocity clipping | Continuous ODE integrated with ERK4 |
 | Velocity bound | Clipped in state update | Inequality constraint `0 ≤ v ≤ 15 m/s` |
-| Warm start | Explicit `working_sequence` array | acados warm-starts internally |
+| Warm start | Explicit `working_sequence` array; first iter seeded from raceline curvature | acados warm-starts internally; first iter seeded from raceline curvature |
+| Steering effort penalty | Rate `(δ_t − δ_{t−1})²` (no fight against sustained corners) | Absolute magnitude `δ²` (LINEAR_LS limitation) |
 | Startup cost | None | ~30 s C-code compilation on first run |
 | `--rollouts` | Present | Not applicable, removed |
 | `--mpc-dt` | Not present | Prediction step size (s) |
@@ -149,15 +150,17 @@ python3 mpc_racing.py [options]
 |---|---|---|
 | `--raceline PATH` | `raceline.csv` | Path to raceline CSV |
 | `--port PORT` | `/dev/ttyUSB0` | Serial port to car |
-| `--laps N` | `1` | Laps before stopping; `0` = run forever |
-| `--yaw-correction F` | `0.3` | Yaw offset added to Vicon heading (rad) |
+| `--laps N` | `3` | Laps before stopping; `0` = run forever |
+| `--yaw-correction F` | `0.0` | Yaw offset added to Vicon heading (rad) |
 | `--speed-gain F` | `20.0` | Feedforward throttle gain (`throttle_ff = gain × v_ref`) |
 | `--speed-kp F` | `5.0` | Proportional gain on speed error |
 | `--max-throttle N` | `200` | Maximum throttle command (hard cap) |
 | `--horizon N` | `20` | MPC horizon steps |
-| `--mpc-dt F` | `0.05` | Prediction step size in seconds (horizon time = N × dt) |
+| `--mpc-dt F` | `0.025` | Prediction step size in seconds (horizon time = N × dt) — must match the main loop period |
 | `--subject NAME` | `UGV` | Vicon subject name |
-| `--server IP` | `192.168.10.1` | Vicon server IP |
+| `--server IP` | `192.168.11.2` | Vicon server IP |
+| `--simulation` | (flag) | Run without Vicon or radio — simulate the bicycle model in-process |
+| `--sim-v0 F` | `0.0` | Initial speed (m/s) when running with `--simulation` |
 
 ### Example
 
@@ -201,7 +204,7 @@ Once the car tracks cleanly at low speed, raise `--max-throttle` in steps of 20 
 
 **`--horizon` and `--mpc-dt`**
 
-The total prediction horizon is `N × dt` seconds. The default (20 × 0.05 s = 1 s) means the solver looks 1 second ahead. At 4 m/s this covers ~4 m of track — enough for the corners in `raceline.csv`. For faster speeds or tighter corners, increase `--horizon` or decrease `--mpc-dt`.
+The total prediction horizon is `N × dt` seconds. The default (20 × 0.025 s = 0.5 s) means the solver looks half a second ahead. At 4 m/s this covers ~2 m of track — enough for the corners on `raceline.csv` and `figure_eight.csv`. For faster speeds or tighter corners, increase `--horizon`. `--mpc-dt` should **stay equal to the main loop period** (`time.sleep(0.025)`); breaking that match introduces a systematic understeer because the model predicts inputs are applied for longer than they actually are.
 
 Note that changing either of these requires deleting the cached solver (see [Generated files](#generated-files)).
 
@@ -211,11 +214,17 @@ These are not currently exposed as CLI arguments because changing them requires 
 
 | Weight | Default | Effect of increasing |
 |---|---|---|
-| `W_CTE` | 5.0 | Tighter lateral tracking; may increase steering oscillation |
-| `W_HEADING` | 2.0 | Faster heading correction; may cause overshoot |
-| `W_SPEED` | 1.0 | Closer speed tracking; interacts with throttle P-controller |
-| `W_STEER` | 5.0 | Smoother steering; may widen the racing line |
+| `W_CTE` | 23.0 | Tighter lateral tracking; may increase steering oscillation |
+| `W_HEADING` | 20.0 | Faster heading correction; may cause overshoot |
+| `W_SPEED` | 0.5 | Closer speed tracking; interacts with throttle P-controller |
+| `W_STEER` | 1.0 | Smoother steering. **LINEAR_LS penalises absolute magnitude `δ²`, not rate** (unlike MPPI). Too large will widen the racing line through corners |
 | `W_ACCEL` | 0.1 | Penalises aggressive acceleration commands |
+
+Other implementation details worth knowing about (no tuning required, but useful when debugging):
+
+- **Velocity-based lookahead.** The MPC's reference projection along the raceline uses `max(state.v, 0.8 m/s)` rather than `v_ref`. Same rationale as MPPI: prevents the reference from jumping several metres ahead of a stationary car at startup.
+- **Reference-heading unwrapping.** The raceline's `psi_ref` values live in `[−π, π]` from `atan2`, but the dynamics model integrates `ψ` without wrapping. Each stage's reference heading is unwrapped to stay near the previous stage's value, eliminating the huge spurious residual that would otherwise appear at the figure-8's `±π` crossing.
+- **Raceline-curvature warm-start.** On the first iteration before acados has any previous solve to inherit from, the primal trajectory is seeded with `δ_k = atan2(L · Δψ_k, v · dt)` for each stage and the state guesses are walked along the raceline waypoints with a continuous ψ. Without this, the very first SQP-RTI step can return nonsense.
 
 **Solver status warnings**
 
