@@ -1,5 +1,6 @@
 acados/
 c_generated_code/
-notes/
+notes/*
+!notes/notes.tex
 vicon/
 vicon_info.txt
