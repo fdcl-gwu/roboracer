@@ -4,3 +4,5 @@ notes/*
 !notes/notes.tex
 vicon/
 vicon_info.txt
+results/
+roboracer_mpc.json

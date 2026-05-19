@@ -45,6 +45,8 @@ import struct
 import time
 from typing import List, Tuple
 
+import os
+
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
@@ -106,6 +108,13 @@ I_MAX     = 0.10   # rad  — maximum integral steering contribution (anti-windu
 # K_SPEED_SIM of 3.0 m/s² per m/s reaches v_ref from rest in ~v_ref/3 seconds,
 # e.g. 4.5 m/s in 1.5 s — aggressive enough to catch up, gentle enough not to overshoot.
 K_SPEED_SIM = 3.0   # (m/s²) / (m/s)
+
+
+# ── Shared comparable cost basis (identical across PID / MPPI / MPC) ─────────
+# Used to produce a controller-agnostic performance metric for cross-comparison.
+COMP_W_CTE     = 23.0   # weight on Euclidean cross-track error (m)
+COMP_W_HEADING = 20.0   # weight on absolute heading error (rad)
+COMP_W_SPEED   = 0.5    # weight on absolute speed error (m/s)
 
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
@@ -321,7 +330,7 @@ class LivePlot:
         self.t_buf    = []
         self.cte_buf  = []
         self.head_buf = []
-        self.vel_buf  = []
+        self.cost_buf = []
         self.ph_buf   = []
         self.pc_buf   = []
         self.dc_buf   = []
@@ -341,11 +350,11 @@ class LivePlot:
         self.ax_head.tick_params(labelsize=7)
         self.l_head, = self.ax_head.plot([], [], "g-", lw=1)
 
-        # Velocity error
-        self.ax_vel.set_title("Velocity Error (m/s)", fontsize=9)
+        # Comparable cost (same basis as MPPI/MPC for cross-controller comparison)
+        self.ax_vel.set_title("Comparable Cost", fontsize=9)
         self.ax_vel.set_xlabel("t (s)", fontsize=8)
         self.ax_vel.tick_params(labelsize=7)
-        self.l_vel, = self.ax_vel.plot([], [], "b-", lw=1)
+        self.l_cost, = self.ax_vel.plot([], [], "b-", lw=1)
 
         # Map
         self.ax_map.set_title("Track View", fontsize=9)
@@ -395,7 +404,7 @@ class LivePlot:
         t_now: float,
         cte: float,
         head_err: float,
-        vel_err: float,
+        comparable_cost: float,
         state: VehicleState,
         preview_traj: np.ndarray,
         delta: float,
@@ -409,7 +418,7 @@ class LivePlot:
         self.t_buf.append(t)
         self.cte_buf.append(abs(cte))
         self.head_buf.append(abs(head_err))
-        self.vel_buf.append(vel_err)
+        self.cost_buf.append(comparable_cost)
         self.ph_buf.append(p_h)
         self.pc_buf.append(p_cte)
         self.dc_buf.append(d_cte)
@@ -420,7 +429,7 @@ class LivePlot:
             self.t_buf    = self.t_buf[-PLOT_WINDOW:]
             self.cte_buf  = self.cte_buf[-PLOT_WINDOW:]
             self.head_buf = self.head_buf[-PLOT_WINDOW:]
-            self.vel_buf  = self.vel_buf[-PLOT_WINDOW:]
+            self.cost_buf = self.cost_buf[-PLOT_WINDOW:]
             self.ph_buf   = self.ph_buf[-PLOT_WINDOW:]
             self.pc_buf   = self.pc_buf[-PLOT_WINDOW:]
             self.dc_buf   = self.dc_buf[-PLOT_WINDOW:]
@@ -435,7 +444,7 @@ class LivePlot:
         self.l_head.set_data(ta, self.head_buf)
         self.ax_head.relim(); self.ax_head.autoscale_view()
 
-        self.l_vel.set_data(ta, self.vel_buf)
+        self.l_cost.set_data(ta, self.cost_buf)
         self.ax_vel.relim(); self.ax_vel.autoscale_view()
 
         self.l_car.set_data([state.x], [state.y])
@@ -462,7 +471,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--raceline",       default="raceline.csv",  help="Path to raceline CSV")
     p.add_argument("--port",           default="/dev/ttyUSB0",  help="Serial port")
-    p.add_argument("--laps",           type=int,   default=3,   help="Laps to complete; 0 = run forever")
+    p.add_argument("--laps",           type=int,   default=10,  help="Laps to complete; 0 = run forever")
     p.add_argument("--yaw-correction", type=float, default=0.0, help="Yaw offset added to Vicon heading (rad)")
     p.add_argument("--speed-gain",     type=float, default=20.0,help="Feedforward throttle gain")
     p.add_argument("--speed-kp",       type=float, default=5.0, help="Proportional gain on speed error")
@@ -503,6 +512,8 @@ def main() -> None:
     vicon = None
     ser   = None
     seq   = 0
+    total_comp_cost = 0.0
+    tick_count      = 0
 
     # Simulation state — initialised at the first raceline point.
     sim_x   = float(raceline.points[0, 0])
@@ -601,6 +612,12 @@ def main() -> None:
             heading_err = normalize_angle(state.psi - raceline.psis[closest_index])
             vel_err     = v_ref - v_est
 
+            comparable_cost = (COMP_W_CTE * cte
+                               + COMP_W_HEADING * abs(heading_err)
+                               + COMP_W_SPEED   * abs(vel_err))
+            total_comp_cost += comparable_cost
+            tick_count      += 1
+
             # ── Command dispatch ──────────────────────────────────────────────
             if args.simulation:
                 sim_delta = float(np.clip(control.delta, -DELTA_MAX, DELTA_MAX))
@@ -629,7 +646,7 @@ def main() -> None:
             time.sleep(0.025)  # ~40 Hz
 
             if t_now - last_plot_t >= 0.1:
-                live.update(t_now, cte, heading_err, vel_err,
+                live.update(t_now, cte, heading_err, comparable_cost,
                             state, preview_traj, control.delta, pid_terms)
                 last_plot_t = t_now
 
@@ -648,6 +665,12 @@ def main() -> None:
                 ser.close()
             if vicon is not None:
                 vicon.close()
+        if tick_count > 0:
+            print(f"Average comparable cost per tick: {total_comp_cost / tick_count:.4f}  "
+                  f"({tick_count} ticks)")
+        os.makedirs("results", exist_ok=True)
+        live.fig.savefig("results/pid_final_plot.png", dpi=150, bbox_inches="tight")
+        print("Saved: results/pid_final_plot.png")
         plt.ioff()
         plt.close("all")
         print("Stopped.")

@@ -34,6 +34,7 @@ Key options:
 import argparse
 import csv
 import math
+import os
 import struct
 import time
 from typing import Tuple
@@ -80,7 +81,13 @@ W_SPEED   = 0.5    # speed tracking
 W_STEER   = 1.0    # steering effort (absolute magnitude — see note in mpc_step)
 W_ACCEL   = 0.1    # acceleration regularisation
 
-MPC_MIN_LOOKAHEAD_VEL = 0.8  # m/s — minimum arc speed for reference point spread
+MPC_MIN_LOOKAHEAD_VEL = 2.0  # m/s — minimum arc speed for reference point spread
+
+# ── Shared comparable cost basis (identical across PID / MPPI / MPC) ─────────
+# Used to produce a controller-agnostic performance metric for cross-comparison.
+COMP_W_CTE     = 23.0   # weight on Euclidean cross-track error (m)
+COMP_W_HEADING = 20.0   # weight on absolute heading error (rad)
+COMP_W_SPEED   = 0.5    # weight on absolute speed error (m/s)
 
 # Coordinate offset applied to raceline x to align with Vicon frame.
 RACELINE_X_OFFSET = 0.0
@@ -213,7 +220,8 @@ def initialize_solver_from_raceline(
     in mppi_racing.py.  Only needed on the first iteration; acados warm-starts
     from the previous solution thereafter.
     """
-    lookahead_vel = max(state.v, MPC_MIN_LOOKAHEAD_VEL)
+    ref_vel_at_closest = float(raceline.points[closest_index, 2])
+    lookahead_vel = max(min(state.v, ref_vel_at_closest), MPC_MIN_LOOKAHEAD_VEL)
     s0 = raceline.arc_lengths[closest_index]
 
     solver.set(0, "x", np.array([state.x, state.y, state.psi, state.v]))
@@ -336,7 +344,10 @@ def mpc_step(
     difference instead.
     """
     x0 = np.array([state.x, state.y, state.psi, state.v])
-    lookahead_vel = max(state.v, MPC_MIN_LOOKAHEAD_VEL)
+    ref_vel_at_closest = float(raceline.points[closest_index, 2])
+    # Cap at v_ref: if the car overshoots, keep references at target-speed spacing
+    # so overspeed registers as CTE (W=23) rather than relying on W_SPEED (0.5) alone.
+    lookahead_vel = max(min(state.v, ref_vel_at_closest), MPC_MIN_LOOKAHEAD_VEL)
 
     # Pin the initial state
     solver.set(0, 'lbx', x0)
@@ -455,7 +466,7 @@ class LivePlot:
         self.ax_map.legend(loc="upper right", fontsize=7)
         self.ax_map.tick_params(labelsize=7)
 
-        self.ax_cost.set_title("MPC Cost", fontsize=9)
+        self.ax_cost.set_title("Comparable Cost", fontsize=9)
         self.ax_cost.set_xlabel("t (s)", fontsize=8)
         self.ax_cost.tick_params(labelsize=7)
         self.l_cost, = self.ax_cost.plot([], [], "m-", lw=1)
@@ -534,7 +545,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument('--raceline',       default='raceline.csv',  help='Path to raceline CSV')
     p.add_argument('--port',           default='/dev/ttyUSB0',  help='Serial port')
-    p.add_argument('--laps',           type=int,   default=3,   help='Laps to complete; 0 = run forever')
+    p.add_argument('--laps',           type=int,   default=10,  help='Laps to complete; 0 = run forever')
     p.add_argument('--yaw-correction', type=float, default=0.0, help='Yaw offset added to Vicon heading (rad)')
     p.add_argument('--speed-gain',     type=float, default=20.0,help='Feedforward throttle gain (throttle_ff = gain * v_ref)')
     p.add_argument('--speed-kp',       type=float, default=5.0, help='Proportional gain on speed error')
@@ -566,6 +577,8 @@ def main() -> None:
     vicon = None
     ser   = None
     seq   = 0
+    total_comp_cost = 0.0
+    tick_count      = 0
 
     # ── Simulation state ──────────────────────────────────────────────────────
     sim_x   = float(raceline.points[0, 0])
@@ -665,6 +678,12 @@ def main() -> None:
             heading_err = normalize_angle(state.psi - raceline.psis[closest_index])
             vel_err     = v_est - v_ref
 
+            comparable_cost = (COMP_W_CTE * cte
+                               + COMP_W_HEADING * abs(heading_err)
+                               + COMP_W_SPEED   * abs(vel_err))
+            total_comp_cost += comparable_cost
+            tick_count      += 1
+
             # ── Command dispatch ──────────────────────────────────────────────
             if args.simulation:
                 sim_delta = float(np.clip(control.delta, -DELTA_MAX, DELTA_MAX))
@@ -693,7 +712,7 @@ def main() -> None:
             time.sleep(0.025)  # ~40 Hz — must match MPC_DT
 
             if t_now - last_plot_t >= 0.1:  # update visualization at ~10 Hz
-                live.update(t_now, cte, heading_err, vel_err, mpc_cost,
+                live.update(t_now, cte, heading_err, vel_err, comparable_cost,
                             state, planned_traj, control.delta)
                 last_plot_t = t_now
 
@@ -712,6 +731,12 @@ def main() -> None:
                 ser.close()
             if vicon is not None:
                 vicon.close()
+        if tick_count > 0:
+            print(f'Average comparable cost per tick: {total_comp_cost / tick_count:.4f}  '
+                  f'({tick_count} ticks)')
+        os.makedirs('results', exist_ok=True)
+        live.fig.savefig('results/mpc_final_plot.png', dpi=150, bbox_inches='tight')
+        print('Saved: results/mpc_final_plot.png')
         plt.ioff()
         plt.close('all')
         print('Stopped.')
