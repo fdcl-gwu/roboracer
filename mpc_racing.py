@@ -73,16 +73,19 @@ DELTA_MAX  =  0.44  # rad, max front-wheel steering angle
 MPC_DT = 0.025  # prediction step size (s) — must match the main loop period
 MPC_N  = 20     # default horizon steps
 
-# Cost weights — LINEAR_LS cost is ||error||²_W, so weights are on squared
-# residuals (MPPI weights are on |residual|; values here are similar in scale).
-W_CTE     = 15.0   # position deviation (applied to both x and y residuals)
-W_HEADING = 35.0   # heading error — keep above W_CTE; heading is the D-term for lateral tracking
-W_SPEED   =  0.5   # speed tracking
-W_STEER   =  0.5   # steering deviation from curvature feedforward — small so it doesn't fight convergence on recovery
-W_ACCEL   =  0.1   # acceleration regularisation
+# Cost weights — LINEAR_LS cost is ||error||²_W on squared residuals.
+# Residual stack: [X-err, Y-err, ψ-err, v-err, δ-err, δ_rate, a].  Heading is
+# kept *below* CTE so the solver doesn't defend ψ_err at the cost of letting
+# the car parallel the raceline without converging.
+W_CTE       = 25.0   # position deviation (applied to both x and y residuals)
+W_HEADING   =  8.0   # heading error — kept below W_CTE so heading is a result of tracking, not a competing objective
+W_SPEED     =  0.5   # speed tracking
+W_DELTA     =  0.5   # steering deviation from curvature feedforward — gentle pull onto geometry
+W_DELTA_RATE=  1.0   # penalty on steering rate (rad/s) — replaces the post-solve clip with a real cost term
+W_ACCEL     =  0.1   # acceleration regularisation
 
 MPC_MIN_LOOKAHEAD_VEL = 2.0  # m/s — minimum arc speed for reference point spread
-MAX_DELTA_RATE = 10.0         # rad/s — post-solve steering rate cap (physical limit ~6.5 rad/s at v=4.5)
+MAX_DELTA_RATE = 10.0         # rad/s — hard rate bound enforced by the solver as |u[0]| ≤ MAX_DELTA_RATE
 
 # ── Shared comparable cost basis (identical across PID / MPPI / MPC) ─────────
 # Used to produce a controller-agnostic performance metric for cross-comparison.
@@ -214,26 +217,44 @@ def initialize_solver_from_raceline(
     raceline: Raceline,
     N: int,
     dt: float,
+    prev_delta: float = 0.0,
 ) -> None:
     """
     Seed the MPC's primal warm-start with state/input trajectories derived
     from raceline curvature.  Counterpart to initialize_sequence_from_raceline()
     in mppi_racing.py.  Only needed on the first iteration; acados warm-starts
     from the previous solution thereafter.
+
+    With augmented state, x[k] = [X, Y, ψ, v, δ_guess] where δ_guess is the
+    curvature-implied steering angle for that stage; u[k] = [δ_rate, a] is
+    seeded with finite-difference rate so the warm start is dynamics-consistent.
     """
-    ref_vel_at_closest = float(raceline.points[closest_index, 2])
-    lookahead_vel = max(min(state.v, ref_vel_at_closest), MPC_MIN_LOOKAHEAD_VEL)
+    lookahead_vel = max(state.v, MPC_MIN_LOOKAHEAD_VEL)
     s0 = raceline.arc_lengths[closest_index]
 
-    solver.set(0, "x", np.array([state.x, state.y, state.psi, state.v]))
+    # Pre-compute the curvature-implied δ along the horizon so we can take
+    # finite differences for the δ_rate warm-start.
+    delta_seq = [prev_delta]
     psi_unwrapped = state.psi
     for k in range(N):
         idx_a = raceline.index_at_arc_length(s0 + k * lookahead_vel * dt)
         idx_b = raceline.index_at_arc_length(s0 + (k + 1) * lookahead_vel * dt)
-        dpsi = normalize_angle(raceline.psis[idx_b] - raceline.psis[idx_a])
-        delta_guess = math.atan2(WHEELBASE * dpsi, dt * lookahead_vel)
-        delta_guess = float(np.clip(delta_guess, -DELTA_MAX, DELTA_MAX))
-        solver.set(k, "u", np.array([delta_guess, 0.0]))
+        dpsi  = normalize_angle(raceline.psis[idx_b] - raceline.psis[idx_a])
+        d     = math.atan2(WHEELBASE * dpsi, dt * lookahead_vel)
+        delta_seq.append(float(np.clip(d, -DELTA_MAX, DELTA_MAX)))
+
+    solver.set(0, "x", np.array([state.x, state.y, state.psi, state.v, prev_delta]))
+    psi_unwrapped = state.psi
+    for k in range(N):
+        idx_b = raceline.index_at_arc_length(s0 + (k + 1) * lookahead_vel * dt)
+        idx_a = raceline.index_at_arc_length(s0 +  k      * lookahead_vel * dt)
+        dpsi  = normalize_angle(raceline.psis[idx_b] - raceline.psis[idx_a])
+
+        delta_rate_guess = float(np.clip(
+            (delta_seq[k + 1] - delta_seq[k]) / dt,
+            -MAX_DELTA_RATE, MAX_DELTA_RATE,
+        ))
+        solver.set(k, "u", np.array([delta_rate_guess, 0.0]))
 
         # State guess for the next stage: walk along the raceline, keeping psi continuous
         psi_unwrapped += dpsi
@@ -242,32 +263,44 @@ def initialize_solver_from_raceline(
             raceline.points[idx_b, 1],
             psi_unwrapped,
             raceline.points[idx_b, 2],
+            delta_seq[k + 1],
         ]))
 
 
 # ── MPC solver construction ───────────────────────────────────────────────────
 def create_mpc_solver(N: int, dt: float) -> AcadosOcpSolver:
     """
-    Build the acados NMPC solver with the kinematic bicycle model.
+    Build the acados NMPC solver with the kinematic bicycle model augmented
+    with steering angle as a state.  The control input is steering rate,
+    which lets the solver enforce |dδ/dt| ≤ MAX_DELTA_RATE as a hard bound
+    and penalise (δ_k − δ_{k-1})² directly in the cost — replacing the
+    earlier post-solve clip and W_STEER·(δ − prev_δ)² reference trick.
+
+    Model:
+      state x = [X, Y, ψ, v, δ]   (5)
+      input u = [δ_rate, a]       (2)
+      ẋ = [v cos ψ, v sin ψ, v/L tan δ, a, δ_rate]
 
     Notes:
       - Continuous-time ODEs; acados integrates with ERK (explicit RK4).
-      - Velocity bounded via state-inequality constraints (not clip-in-dynamics).
+      - Velocity and steering both bounded via state-inequality constraints.
+      - Steering rate bounded via input-inequality constraints (true rate cap).
       - Angle wrapping is NOT applied inside the model; reference heading is
         unwrapped to stay near state.psi inside mpc_step().
     """
-    x_sym = ca.MX.sym('x', 4)   # [X, Y, psi, v]
-    u_sym = ca.MX.sym('u', 2)   # [delta, a]
-    xdot  = ca.MX.sym('xdot', 4)
+    x_sym = ca.MX.sym('x', 5)   # [X, Y, psi, v, delta]
+    u_sym = ca.MX.sym('u', 2)   # [delta_rate, a]
+    xdot  = ca.MX.sym('xdot', 5)
 
-    X, Y, psi, v = x_sym[0], x_sym[1], x_sym[2], x_sym[3]
-    delta, a     = u_sym[0], u_sym[1]
+    X, Y, psi, v, delta = x_sym[0], x_sym[1], x_sym[2], x_sym[3], x_sym[4]
+    delta_rate, a       = u_sym[0], u_sym[1]
 
     f_expl = ca.vertcat(
         v * ca.cos(psi),
         v * ca.sin(psi),
         v / WHEELBASE * ca.tan(delta),
         a,
+        delta_rate,
     )
 
     model              = AcadosModel()
@@ -281,10 +314,10 @@ def create_mpc_solver(N: int, dt: float) -> AcadosOcpSolver:
     ocp       = AcadosOcp()
     ocp.model = model
 
-    nx   = 4
+    nx   = 5
     nu   = 2
-    ny   = nx + nu   # stage residual:    [X, Y, psi, v, delta, a]
-    ny_e = nx        # terminal residual: [X, Y, psi, v]
+    ny   = nx + nu   # stage residual:    [X, Y, psi, v, delta, delta_rate, a]
+    ny_e = nx        # terminal residual: [X, Y, psi, v, delta]
 
     ocp.dims.N = N
 
@@ -296,20 +329,22 @@ def create_mpc_solver(N: int, dt: float) -> AcadosOcpSolver:
 
     ocp.cost.Vx = Vx
     ocp.cost.Vu = Vu
-    ocp.cost.W  = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_STEER, W_ACCEL])
+    ocp.cost.W  = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_DELTA, W_DELTA_RATE, W_ACCEL])
     ocp.cost.yref = np.zeros(ny)
 
     ocp.cost.Vx_e   = np.eye(nx)
-    ocp.cost.W_e    = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED])
+    ocp.cost.W_e    = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_DELTA])
     ocp.cost.yref_e = np.zeros(ny_e)
 
-    ocp.constraints.lbu   = np.array([-DELTA_MAX, MAX_DECEL])
-    ocp.constraints.ubu   = np.array([ DELTA_MAX, MAX_ACCEL])
+    # Input bounds: |δ_rate| ≤ MAX_DELTA_RATE, a ∈ [MAX_DECEL, MAX_ACCEL]
+    ocp.constraints.lbu   = np.array([-MAX_DELTA_RATE, MAX_DECEL])
+    ocp.constraints.ubu   = np.array([ MAX_DELTA_RATE, MAX_ACCEL])
     ocp.constraints.idxbu = np.array([0, 1])
 
-    ocp.constraints.lbx   = np.array([0.0])
-    ocp.constraints.ubx   = np.array([MAX_SPEED])
-    ocp.constraints.idxbx = np.array([3])
+    # State bounds: v ∈ [0, MAX_SPEED], δ ∈ [-DELTA_MAX, DELTA_MAX]
+    ocp.constraints.lbx   = np.array([0.0,       -DELTA_MAX])
+    ocp.constraints.ubx   = np.array([MAX_SPEED,  DELTA_MAX])
+    ocp.constraints.idxbx = np.array([3, 4])
 
     ocp.constraints.x0 = np.zeros(nx)
 
@@ -324,8 +359,8 @@ def create_mpc_solver(N: int, dt: float) -> AcadosOcpSolver:
     # Push current module-level weights into the running solver so that weight
     # changes take effect without a full recompile (acados supports runtime
     # cost_set for LINEAR_LS).
-    W   = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_STEER, W_ACCEL])
-    W_e = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED])
+    W   = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_DELTA, W_DELTA_RATE, W_ACCEL])
+    W_e = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_DELTA])
     for k in range(N):
         solver.cost_set(k, 'W', W)
     solver.cost_set(N, 'W', W_e)
@@ -350,20 +385,22 @@ def mpc_step(
     iteration, returns (control, planned_traj, cost).  No working_sequence is
     threaded through — acados warm-starts internally from the previous solve.
 
-    Steering reference: each stage yref[4] is the curvature-implied steering
-    angle (kinematic-bicycle inversion of κ = (v/L)·tan δ).  No anchoring to
-    prev_delta — the reference tracks geometry, not correction history, so
-    transient corrections don't leak into the next horizon's reference.
-    The proper long-term fix is augmenting the state with delta_prev and
-    penalising (delta_k - delta_{k-1})^2, which requires a solver recompile.
+    State: [X, Y, ψ, v, δ] — δ is part of the state and pinned at x0[4] =
+    prev_delta.  Control: [δ_rate, a].  The solver enforces |δ_rate| ≤
+    MAX_DELTA_RATE as a hard bound and penalises δ_rate² in cost — no
+    post-solve rate clip is needed.
+
+    Steering reference: yref[4] is the curvature-implied steering angle
+    (kinematic-bicycle inversion of κ = (v/L)·tan δ).  No anchoring to
+    prev_delta — the reference tracks geometry, not correction history.
     """
-    x0 = np.array([state.x, state.y, state.psi, state.v])
+    x0 = np.array([state.x, state.y, state.psi, state.v, prev_delta])
     # Use state.v directly (with a floor) so the horizon extends far enough at
     # speed.  Overspeed registers as CTE since the reference points themselves
     # come from raceline indices spaced by lookahead_vel·dt.
     lookahead_vel = max(state.v, MPC_MIN_LOOKAHEAD_VEL)
 
-    # Pin the initial state
+    # Pin the initial state (including δ at index 4)
     solver.set(0, 'lbx', x0)
     solver.set(0, 'ubx', x0)
 
@@ -373,6 +410,7 @@ def mpc_step(
     # δ = atan(L·dψ / (v·dt)).
     psi_unwrapped = state.psi
     psi_prev      = state.psi
+    delta_ref     = 0.0
     for k in range(N):
         next_arc = raceline.arc_lengths[closest_index] + (k + 1) * lookahead_vel * mpc_dt
         ref_idx  = raceline.index_at_arc_length(next_arc)
@@ -392,37 +430,38 @@ def mpc_step(
             psi_unwrapped,
             raceline.points[ref_idx, 2],
             delta_ref,
-            0.0,
+            0.0,   # δ_rate target — penalise any non-zero rate
+            0.0,   # a target
         ]))
 
-    # Terminal reference (no input residual at terminal stage)
-    arc_e   = raceline.arc_lengths[closest_index] + N * lookahead_vel * mpc_dt
-    ref_e   = raceline.index_at_arc_length(arc_e)
-    psi_unwrapped = psi_unwrapped + normalize_angle(raceline.psis[ref_e] - psi_unwrapped)
+    # Terminal reference: include the curvature-implied δ so horizon end is
+    # consistent with the upcoming track geometry.
+    arc_e         = raceline.arc_lengths[closest_index] + N * lookahead_vel * mpc_dt
+    ref_e         = raceline.index_at_arc_length(arc_e)
+    psi_e_unwrap  = psi_unwrapped + normalize_angle(raceline.psis[ref_e] - psi_unwrapped)
+    delta_ref_e   = float(np.clip(
+        math.atan2(WHEELBASE * (psi_e_unwrap - psi_unwrapped), lookahead_vel * mpc_dt),
+        -DELTA_MAX, DELTA_MAX,
+    ))
     solver.set(N, 'yref', np.array([
         raceline.points[ref_e, 0],
         raceline.points[ref_e, 1],
-        psi_unwrapped,
+        psi_e_unwrap,
         raceline.points[ref_e, 2],
+        delta_ref_e,
     ]))
 
     status = solver.solve()
     if status not in (0, 2):   # 0 = success, 2 = max_iter (acceptable for RTI)
         print(f'[WARN] acados solver returned status {status}')
 
-    u0       = solver.get(0, 'u')
-    accel    = float(u0[1])
-    delta    = float(u0[0])
-    # Post-solve rate cap: prevent the commanded angle from jumping faster than
-    # MAX_DELTA_RATE rad/s between consecutive ticks.  This guards against
-    # bang-bang outputs while the solver is imperfectly converged (RTI = 1 iter).
-    max_step = MAX_DELTA_RATE * mpc_dt
-    delta    = float(np.clip(delta, prev_delta - max_step, prev_delta + max_step))
-    # Patch the solver's u[0] with the clipped command so the next solve's
-    # warm-start matches what we actually applied — otherwise the solver
-    # repeatedly re-fights the same rate-limited delta, producing per-tick jerk.
-    solver.set(0, 'u', np.array([delta, accel]))
-    control  = ControlInput(delta=delta, a=accel)
+    # Control output: u0 = [δ_rate, a].  The commanded δ is the next stage's
+    # state value, which equals prev_delta + δ_rate·dt and respects all bounds
+    # the solver enforced.
+    u0    = solver.get(0, 'u')
+    accel = float(u0[1])
+    delta = float(solver.get(1, 'x')[4])
+    control = ControlInput(delta=delta, a=accel)
 
     # Planned (x,y) trajectory for the dashboard — counterpart to MPPI's planned_traj
     planned_traj = np.array([solver.get(k, 'x')[:2] for k in range(N + 1)])
@@ -685,7 +724,7 @@ def main() -> None:
             if prev_closest_index == -1:
                 initialize_solver_from_raceline(
                     solver, state, closest_index, raceline,
-                    args.horizon, args.mpc_dt,
+                    args.horizon, args.mpc_dt, prev_delta,
                 )
 
             # ── Lap counter ───────────────────────────────────────────────────
