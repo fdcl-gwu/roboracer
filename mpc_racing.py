@@ -78,7 +78,7 @@ MPC_N  = 20     # default horizon steps
 W_CTE     = 15.0   # position deviation (applied to both x and y residuals)
 W_HEADING = 35.0   # heading error — keep above W_CTE; heading is the D-term for lateral tracking
 W_SPEED   =  0.5   # speed tracking
-W_STEER   =  1.0   # steering deviation from curvature reference (see mpc_step)
+W_STEER   =  8.0   # steering rate penalty: cost = W_STEER * (delta - prev_delta)²
 W_ACCEL   =  0.1   # acceleration regularisation
 
 MPC_MIN_LOOKAHEAD_VEL = 2.0  # m/s — minimum arc speed for reference point spread
@@ -350,14 +350,13 @@ def mpc_step(
     iteration, returns (control, planned_traj, cost).  No working_sequence is
     threaded through — acados warm-starts internally from the previous solve.
 
-    Steering reference: each stage yref[4] is set to the curvature-implied
-    steering angle for that raceline segment, not zero.  This prevents W_STEER
-    from fighting the track geometry on every corner, which was causing bang-bang
-    oscillation.  W_STEER now penalises deviation *from* natural curvature rather
-    than deviation from zero.  A post-solve rate cap (MAX_DELTA_RATE) limits how
-    fast the commanded angle can change between ticks as an additional guard.
+    Steering reference: each stage yref[4] = prev_delta, so the cost term
+    W_STEER * (delta_k - prev_delta)^2 acts as a steering-rate penalty at
+    stage 0 and a smoothing regulariser for later stages.  This replaces the
+    earlier curvature-based delta_ref approach, which caused large yref[4]
+    jumps at the figure-8 crossing and contributed to bang-bang saturation.
     The proper long-term fix is augmenting the state with delta_prev and
-    penalising (delta - delta_prev)^2, which requires a solver recompile.
+    penalising (delta_k - delta_{k-1})^2, which requires a solver recompile.
     """
     x0 = np.array([state.x, state.y, state.psi, state.v])
     ref_vel_at_closest = float(raceline.points[closest_index, 2])
@@ -371,30 +370,20 @@ def mpc_step(
 
     # Stage references.  Heading is unwrapped relative to state.psi so the
     # residual stays small across raceline wrap points (figure-8 near index 377).
-    # The delta reference is the curvature-implied steering angle for each step,
-    # computed from the psi change between consecutive reference points.
+    # yref[4] = prev_delta turns W_STEER into a rate penalty: W_STEER*(δ−δ_prev)².
     psi_unwrapped = state.psi
-    psi_prev      = state.psi
     for k in range(N):
         next_arc = raceline.arc_lengths[closest_index] + (k + 1) * lookahead_vel * mpc_dt
         ref_idx  = raceline.index_at_arc_length(next_arc)
-        psi_raw  = raceline.psis[ref_idx]
-        psi_unwrapped = psi_unwrapped + normalize_angle(psi_raw - psi_unwrapped)
-
-        dpsi      = psi_unwrapped - psi_prev
-        delta_ref = float(np.clip(
-            math.atan2(WHEELBASE * dpsi, lookahead_vel * mpc_dt),
-            -DELTA_MAX, DELTA_MAX,
-        ))
-        psi_prev = psi_unwrapped
+        psi_unwrapped = psi_unwrapped + normalize_angle(raceline.psis[ref_idx] - psi_unwrapped)
 
         solver.set(k, 'yref', np.array([
             raceline.points[ref_idx, 0],
             raceline.points[ref_idx, 1],
             psi_unwrapped,
             raceline.points[ref_idx, 2],
-            delta_ref,  # curvature-based steering reference (was 0.0)
-            0.0,        # a — pull toward zero acceleration
+            prev_delta,  # rate penalty: W_STEER * (delta - prev_delta)²
+            0.0,
         ]))
 
     # Terminal reference (no input residual at terminal stage)
