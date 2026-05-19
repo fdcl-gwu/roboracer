@@ -78,14 +78,14 @@ MPC_N  = 20     # default horizon steps
 # kept *below* CTE so the solver doesn't defend ψ_err at the cost of letting
 # the car parallel the raceline without converging.
 W_CTE       = 25.0   # position deviation (applied to both x and y residuals)
-W_HEADING   =  8.0   # heading error — kept below W_CTE so heading is a result of tracking, not a competing objective
-W_SPEED     =  0.5   # speed tracking
+W_HEADING   =  3.0   # heading error — kept well below W_CTE; on a kinematic bicycle ψ is the integral of v/L·tan δ, so it follows from CTE tracking and shouldn't be defended directly
+W_SPEED     =  5.0   # speed tracking — bumped so MPC's velocity prediction aligns with the external FF+P throttle controller (which targets v_ref independently in real mode)
 W_DELTA     =  0.5   # steering deviation from curvature feedforward — gentle pull onto geometry
-W_DELTA_RATE=  1.0   # penalty on steering rate (rad/s) — replaces the post-solve clip with a real cost term
+W_DELTA_RATE= 10.0   # penalty on steering rate (rad/s) — primary smoothness regulariser; at max rate ~6.5 the per-stage cost is ~420, more than CTE of 4 m, so the solver only uses fast steering when really necessary
 W_ACCEL     =  0.1   # acceleration regularisation
 
 MPC_MIN_LOOKAHEAD_VEL = 2.0  # m/s — minimum arc speed for reference point spread
-MAX_DELTA_RATE = 10.0         # rad/s — hard rate bound enforced by the solver as |u[0]| ≤ MAX_DELTA_RATE
+MAX_DELTA_RATE = 6.5         # rad/s — hard rate bound enforced by the solver; matches measured servo capability so the plan is physically realisable
 
 # ── Shared comparable cost basis (identical across PID / MPPI / MPC) ─────────
 # Used to produce a controller-agnostic performance metric for cross-comparison.
@@ -691,6 +691,10 @@ def main() -> None:
         mode_str = 'SIMULATION' if args.simulation else 'MPC'
         print(f'Running {mode_str}. Target laps: {lap_target_str}. Press Ctrl-C to abort.')
 
+        loop_period         = args.mpc_dt   # target wall-clock period; must match the MPC's dt
+        next_loop_deadline  = time.time()
+        late_warn_count     = 0
+
         while True:
             t_now = time.time()
 
@@ -785,12 +789,27 @@ def main() -> None:
                 ser.write(pkt)
                 seq += 1
 
-            time.sleep(0.025)  # ~40 Hz — must match MPC_DT
-
             if t_now - last_plot_t >= 0.1:  # update visualization at ~10 Hz
                 live.update(t_now, cte, heading_err, vel_err, comparable_cost,
                             state, planned_traj, control.delta)
                 last_plot_t = t_now
+
+            # Maintain a constant control-loop period regardless of work time
+            # so the actual dt matches the MPC's compiled dt.  Without this,
+            # loop_period = work + 0.025s ≈ 30-40ms while MPC predicts 25ms
+            # steps — predicted trajectories then drift ~30% out of sync with
+            # reality and the controller chases lag.
+            next_loop_deadline += loop_period
+            slack = next_loop_deadline - time.time()
+            if slack > 0.0:
+                time.sleep(slack)
+            else:
+                # Work overran the budget — resync deadline to now so we don't
+                # accumulate debt, and warn occasionally.
+                next_loop_deadline = time.time()
+                late_warn_count   += 1
+                if late_warn_count % 40 == 1:  # at ~40Hz, ≈ once per second
+                    print(f'[WARN] loop overrun by {-slack*1000:.1f} ms (count={late_warn_count})')
 
     except KeyboardInterrupt:
         print('\nKeyboard interrupt.')
