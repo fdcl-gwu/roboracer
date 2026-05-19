@@ -75,14 +75,14 @@ MPC_N  = 20     # default horizon steps
 
 # Cost weights — LINEAR_LS cost is ||error||²_W, so weights are on squared
 # residuals (MPPI weights are on |residual|; values here are similar in scale).
-W_CTE     =  8.0   # position deviation (applied to both x and y residuals)
-W_HEADING = 40.0   # heading error — must dominate W_CTE; heading IS the D-term for lateral tracking
+W_CTE     = 15.0   # position deviation (applied to both x and y residuals)
+W_HEADING = 35.0   # heading error — keep above W_CTE; heading is the D-term for lateral tracking
 W_SPEED   =  0.5   # speed tracking
 W_STEER   =  1.0   # steering deviation from curvature reference (see mpc_step)
 W_ACCEL   =  0.1   # acceleration regularisation
 
 MPC_MIN_LOOKAHEAD_VEL = 2.0  # m/s — minimum arc speed for reference point spread
-MAX_DELTA_RATE = 3.0          # rad/s — post-solve steering rate cap; reduce if chattering persists
+MAX_DELTA_RATE = 10.0         # rad/s — post-solve steering rate cap (physical limit ~6.5 rad/s at v=4.5)
 
 # ── Shared comparable cost basis (identical across PID / MPPI / MPC) ─────────
 # Used to produce a controller-agnostic performance metric for cross-comparison.
