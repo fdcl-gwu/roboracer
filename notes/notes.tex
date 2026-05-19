@@ -694,67 +694,36 @@ All three controllers are benchmarked on the same figure-8 raceline (loop
 radius $R \approx 1.5$\,m, total arc length $\approx 17.3$\,m, constant
 reference speed $v_{\text{ref}} = 4.5$\,m\,s$^{-1}$) over $10$ laps each.
 Errors are accumulated per control step from the lap start to the lap end
-and reported as lap-averaged RMS values.
-
-\subsection{Metrics}
-
-For each lap $\ell$, with $T_\ell$ samples:
-\[
-\text{RMS}_e^{(\ell)} = \sqrt{\frac{1}{T_\ell}\sum_{t=1}^{T_\ell} e_t^2},
-\qquad
-\text{RMS}_{\psi_e}^{(\ell)} = \sqrt{\frac{1}{T_\ell}\sum_{t=1}^{T_\ell} \psi_{e,t}^2},
-\qquad
-\text{RMS}_{v_e}^{(\ell)} = \sqrt{\frac{1}{T_\ell}\sum_{t=1}^{T_\ell} (v_t - v_{\text{ref},t})^2}.
-\]
-
-Aggregate metrics are the means and standard deviations over $\ell = 1, \dots, 10$.
+and reported as tick-averaged RMS values.
 
 \subsection{Results}
-
-\begin{center}
-\begin{tabular}{lcccc}
-\toprule
-Controller & $|e|_{\text{RMS}}$ (m) & $|\psi_e|_{\text{RMS}}$ (rad) & $|v_e|_{\text{RMS}}$ (m/s) & Notes \\
-\midrule
-PID  &  --- & --- & --- & Baseline \\
-MPPI &  --- & --- & --- & 300 rollouts, $\lambda = 20$ \\
-MPC  &  --- & --- & --- & SQP-RTI, ERK4 \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-Relative differences (with PID as the reference):
+Average per-tick error over ten laps of the figure-eight raceline
 
 \begin{center}
 \begin{tabular}{lccc}
 \toprule
-Controller & $\Delta |e|$ vs PID & $\Delta |\psi_e|$ vs PID & $\Delta |v_e|$ vs PID \\
+Controller & $|e|_{\text{RMS}}$&$\Delta |e|$ vs PID& Notes \\
 \midrule
-MPPI & --- & --- & --- \\
-MPC  & --- & --- & --- \\
+PID  & 8.7663 &---& Baseline \\
+MPPI & 8.1424 &-0.6239& 300 rollouts, $\lambda = 20$ \\
+MPC  & && SQP-RTI, ERK4 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \subsection{Discussion}
 
-\emph{(To be filled in once the 10-lap runs are collected.)} Expected qualitative
-findings, to be confirmed by the data:
-
 \begin{itemize}
-  \item \textbf{PID} should have the largest $|e|_{\text{RMS}}$, especially
+  \item \textbf{PID} exhibited the largest $|e|_{\text{RMS}}$, especially
         through corner entries and exits, because it reacts only to current
-        error and cannot anticipate the curvature change.
-  \item \textbf{MPPI} should outperform PID by virtue of horizon-aware planning,
-        but show non-zero step-to-step variation in $\delta$ because the
-        weighted-average update is stochastic.  Steering RMS should be slightly
-        higher than MPC.
+        error and cannot anticipate the curvature change. Interestingly, PID looks the 'smoothest' during real operation, although it is at the cost of fidelity to the preplanned racing line.
+  \item \textbf{MPPI} outperformed PID by virtue of horizon-aware planning. On analysis of the cost over time plot, MPPI showed the greatest gains over PID through the center of the figure eight, where there is a rapid change in steering from left to right that rewards prior planning.
   \item \textbf{MPC} should produce the smoothest steering trace and the
         smallest tracking errors, at the cost of compile-time complexity and
         a (one-time) solver build step.
-  \item All three should track $v_{\text{ref}}$ similarly, since the
+  \item All three notably track $v_{\text{ref}}$ similarly, since the
         longitudinal channel is governed by the same feedforward-plus-P
-        throttle controller in every case.
+        throttle controller in every case, as opposed to being decided by the controller itself. It is debatable whether this is a better approach than just having each controller try to drive as quickly as it can with only a defined trajectory. This is worth further exploration when the trajectory planning algorithm is being implemented in the future.
 \end{itemize}
 
 \end{document}

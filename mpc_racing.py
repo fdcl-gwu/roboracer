@@ -78,7 +78,7 @@ MPC_N  = 20     # default horizon steps
 W_CTE     = 15.0   # position deviation (applied to both x and y residuals)
 W_HEADING = 35.0   # heading error — keep above W_CTE; heading is the D-term for lateral tracking
 W_SPEED   =  0.5   # speed tracking
-W_STEER   =  5.0   # steering deviation from rate-limited curvature reference
+W_STEER   =  0.5   # steering deviation from curvature feedforward — small so it doesn't fight convergence on recovery
 W_ACCEL   =  0.1   # acceleration regularisation
 
 MPC_MIN_LOOKAHEAD_VEL = 2.0  # m/s — minimum arc speed for reference point spread
@@ -351,21 +351,17 @@ def mpc_step(
     threaded through — acados warm-starts internally from the previous solve.
 
     Steering reference: each stage yref[4] is the curvature-implied steering
-    angle, rate-limited stage-to-stage starting from prev_delta.  This serves
-    two purposes:
-      1. On straights the reference is ~0, so W_STEER pulls delta toward zero
-         as the car converges on the raceline — providing convergence damping.
-      2. At the figure-8 crossing the curvature flips sign abruptly; the
-         rate-limit spreads the reversal across 3-4 stages instead of jumping,
-         preventing the reference from driving the solver to full saturation.
+    angle (kinematic-bicycle inversion of κ = (v/L)·tan δ).  No anchoring to
+    prev_delta — the reference tracks geometry, not correction history, so
+    transient corrections don't leak into the next horizon's reference.
     The proper long-term fix is augmenting the state with delta_prev and
     penalising (delta_k - delta_{k-1})^2, which requires a solver recompile.
     """
     x0 = np.array([state.x, state.y, state.psi, state.v])
-    ref_vel_at_closest = float(raceline.points[closest_index, 2])
-    # Cap at v_ref: if the car overshoots, keep references at target-speed spacing
-    # so overspeed registers as CTE (W=23) rather than relying on W_SPEED (0.5) alone.
-    lookahead_vel = max(min(state.v, ref_vel_at_closest), MPC_MIN_LOOKAHEAD_VEL)
+    # Use state.v directly (with a floor) so the horizon extends far enough at
+    # speed.  Overspeed registers as CTE since the reference points themselves
+    # come from raceline indices spaced by lookahead_vel·dt.
+    lookahead_vel = max(state.v, MPC_MIN_LOOKAHEAD_VEL)
 
     # Pin the initial state
     solver.set(0, 'lbx', x0)
@@ -373,37 +369,29 @@ def mpc_step(
 
     # Stage references.  Heading is unwrapped relative to state.psi so the
     # residual stays small across raceline wrap points (figure-8 near index 377).
-    # The steering reference is the curvature-implied angle for each step,
-    # rate-limited across stages from prev_delta.  On a straight (curvature≈0)
-    # this pulls delta toward zero, damping lateral overshoot.  At the figure-8
-    # crossing the ramp prevents a single-step jump to opposite full lock.
-    psi_unwrapped  = state.psi
-    psi_prev       = state.psi
-    prev_delta_ref = prev_delta   # reference ramp starts at last actual command
-    max_ref_step   = MAX_DELTA_RATE * mpc_dt
+    # delta_ref is the curvature-implied steering angle for each stage:
+    # δ = atan(L·dψ / (v·dt)).
+    psi_unwrapped = state.psi
+    psi_prev      = state.psi
     for k in range(N):
         next_arc = raceline.arc_lengths[closest_index] + (k + 1) * lookahead_vel * mpc_dt
         ref_idx  = raceline.index_at_arc_length(next_arc)
         psi_raw  = raceline.psis[ref_idx]
         psi_unwrapped = psi_unwrapped + normalize_angle(psi_raw - psi_unwrapped)
 
-        dpsi          = psi_unwrapped - psi_prev
-        delta_curve   = float(np.clip(
+        dpsi      = psi_unwrapped - psi_prev
+        delta_ref = float(np.clip(
             math.atan2(WHEELBASE * dpsi, lookahead_vel * mpc_dt),
             -DELTA_MAX, DELTA_MAX,
         ))
-        delta_ref     = float(np.clip(delta_curve,
-                                      prev_delta_ref - max_ref_step,
-                                      prev_delta_ref + max_ref_step))
-        prev_delta_ref = delta_ref
-        psi_prev       = psi_unwrapped
+        psi_prev = psi_unwrapped
 
         solver.set(k, 'yref', np.array([
             raceline.points[ref_idx, 0],
             raceline.points[ref_idx, 1],
             psi_unwrapped,
             raceline.points[ref_idx, 2],
-            delta_ref,   # rate-limited curvature reference
+            delta_ref,
             0.0,
         ]))
 
@@ -422,14 +410,19 @@ def mpc_step(
     if status not in (0, 2):   # 0 = success, 2 = max_iter (acceptable for RTI)
         print(f'[WARN] acados solver returned status {status}')
 
-    u0    = solver.get(0, 'u')
-    delta = float(u0[0])
+    u0       = solver.get(0, 'u')
+    accel    = float(u0[1])
+    delta    = float(u0[0])
     # Post-solve rate cap: prevent the commanded angle from jumping faster than
     # MAX_DELTA_RATE rad/s between consecutive ticks.  This guards against
     # bang-bang outputs while the solver is imperfectly converged (RTI = 1 iter).
     max_step = MAX_DELTA_RATE * mpc_dt
     delta    = float(np.clip(delta, prev_delta - max_step, prev_delta + max_step))
-    control  = ControlInput(delta=delta, a=float(u0[1]))
+    # Patch the solver's u[0] with the clipped command so the next solve's
+    # warm-start matches what we actually applied — otherwise the solver
+    # repeatedly re-fights the same rate-limited delta, producing per-tick jerk.
+    solver.set(0, 'u', np.array([delta, accel]))
+    control  = ControlInput(delta=delta, a=accel)
 
     # Planned (x,y) trajectory for the dashboard — counterpart to MPPI's planned_traj
     planned_traj = np.array([solver.get(k, 'x')[:2] for k in range(N + 1)])
