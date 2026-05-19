@@ -78,10 +78,11 @@ MPC_N  = 20     # default horizon steps
 W_CTE     = 23.0   # position deviation (applied to both x and y residuals)
 W_HEADING = 20.0   # heading error
 W_SPEED   = 0.5    # speed tracking
-W_STEER   = 1.0    # steering effort (absolute magnitude — see note in mpc_step)
+W_STEER   = 1.0    # steering deviation from curvature reference (see mpc_step)
 W_ACCEL   = 0.1    # acceleration regularisation
 
 MPC_MIN_LOOKAHEAD_VEL = 2.0  # m/s — minimum arc speed for reference point spread
+MAX_DELTA_RATE = 3.0          # rad/s — post-solve steering rate cap; reduce if chattering persists
 
 # ── Shared comparable cost basis (identical across PID / MPPI / MPC) ─────────
 # Used to produce a controller-agnostic performance metric for cross-comparison.
@@ -329,6 +330,7 @@ def mpc_step(
     solver: AcadosOcpSolver,
     N: int,
     mpc_dt: float,
+    prev_delta: float = 0.0,
 ) -> Tuple[ControlInput, np.ndarray, float]:
     """
     Counterpart to mppi_step() in mppi_racing.py.
@@ -337,11 +339,14 @@ def mpc_step(
     iteration, returns (control, planned_traj, cost).  No working_sequence is
     threaded through — acados warm-starts internally from the previous solve.
 
-    Note on W_STEER: in LINEAR_LS this penalises absolute |delta| rather than
-    delta rate as the MPPI code does.  Acados' RTI warm-start usually provides
-    enough temporal smoothness that this is acceptable; if the steering still
-    chatters, augment the state with a previous-delta term and penalise the
-    difference instead.
+    Steering reference: each stage yref[4] is set to the curvature-implied
+    steering angle for that raceline segment, not zero.  This prevents W_STEER
+    from fighting the track geometry on every corner, which was causing bang-bang
+    oscillation.  W_STEER now penalises deviation *from* natural curvature rather
+    than deviation from zero.  A post-solve rate cap (MAX_DELTA_RATE) limits how
+    fast the commanded angle can change between ticks as an additional guard.
+    The proper long-term fix is augmenting the state with delta_prev and
+    penalising (delta - delta_prev)^2, which requires a solver recompile.
     """
     x0 = np.array([state.x, state.y, state.psi, state.v])
     ref_vel_at_closest = float(raceline.points[closest_index, 2])
@@ -353,25 +358,35 @@ def mpc_step(
     solver.set(0, 'lbx', x0)
     solver.set(0, 'ubx', x0)
 
-    # Stage references — same arc-length lookahead scheme as mppi_step.
-    # Heading is unwrapped relative to state.psi so the residual stays small
-    # across raceline wrap points (the figure-8 has one near index 377).
+    # Stage references.  Heading is unwrapped relative to state.psi so the
+    # residual stays small across raceline wrap points (figure-8 near index 377).
+    # The delta reference is the curvature-implied steering angle for each step,
+    # computed from the psi change between consecutive reference points.
     psi_unwrapped = state.psi
+    psi_prev      = state.psi
     for k in range(N):
         next_arc = raceline.arc_lengths[closest_index] + (k + 1) * lookahead_vel * mpc_dt
         ref_idx  = raceline.index_at_arc_length(next_arc)
         psi_raw  = raceline.psis[ref_idx]
         psi_unwrapped = psi_unwrapped + normalize_angle(psi_raw - psi_unwrapped)
+
+        dpsi      = psi_unwrapped - psi_prev
+        delta_ref = float(np.clip(
+            math.atan2(WHEELBASE * dpsi, lookahead_vel * mpc_dt),
+            -DELTA_MAX, DELTA_MAX,
+        ))
+        psi_prev = psi_unwrapped
+
         solver.set(k, 'yref', np.array([
             raceline.points[ref_idx, 0],
             raceline.points[ref_idx, 1],
             psi_unwrapped,
             raceline.points[ref_idx, 2],
-            0.0,   # delta — pull toward zero effort
-            0.0,   # a    — pull toward zero acceleration (idle)
+            delta_ref,  # curvature-based steering reference (was 0.0)
+            0.0,        # a — pull toward zero acceleration
         ]))
 
-    # Terminal reference
+    # Terminal reference (no input residual at terminal stage)
     arc_e   = raceline.arc_lengths[closest_index] + N * lookahead_vel * mpc_dt
     ref_e   = raceline.index_at_arc_length(arc_e)
     psi_unwrapped = psi_unwrapped + normalize_angle(raceline.psis[ref_e] - psi_unwrapped)
@@ -386,8 +401,14 @@ def mpc_step(
     if status not in (0, 2):   # 0 = success, 2 = max_iter (acceptable for RTI)
         print(f'[WARN] acados solver returned status {status}')
 
-    u0 = solver.get(0, 'u')
-    control = ControlInput(delta=float(u0[0]), a=float(u0[1]))
+    u0    = solver.get(0, 'u')
+    delta = float(u0[0])
+    # Post-solve rate cap: prevent the commanded angle from jumping faster than
+    # MAX_DELTA_RATE rad/s between consecutive ticks.  This guards against
+    # bang-bang outputs while the solver is imperfectly converged (RTI = 1 iter).
+    max_step = MAX_DELTA_RATE * mpc_dt
+    delta    = float(np.clip(delta, prev_delta - max_step, prev_delta + max_step))
+    control  = ControlInput(delta=delta, a=float(u0[1]))
 
     # Planned (x,y) trajectory for the dashboard — counterpart to MPPI's planned_traj
     planned_traj = np.array([solver.get(k, 'x')[:2] for k in range(N + 1)])
@@ -611,6 +632,7 @@ def main() -> None:
         near_end           = False
         prev_closest_index = -1
         last_plot_t        = 0.0
+        prev_delta         = 0.0
 
         lap_target_str = str(args.laps) if args.laps > 0 else 'unlimited'
         mode_str = 'SIMULATION' if args.simulation else 'MPC'
@@ -667,8 +689,9 @@ def main() -> None:
             # ── MPC step ──────────────────────────────────────────────────────
             control, planned_traj, mpc_cost = mpc_step(
                 state, raceline, closest_index, solver,
-                args.horizon, args.mpc_dt,
+                args.horizon, args.mpc_dt, prev_delta,
             )
+            prev_delta = control.delta
 
             v_ref       = float(raceline.points[closest_index, 2])
             cte         = math.hypot(
