@@ -75,11 +75,11 @@ MPC_N  = 20     # default horizon steps
 
 # Cost weights — LINEAR_LS cost is ||error||²_W, so weights are on squared
 # residuals (MPPI weights are on |residual|; values here are similar in scale).
-W_CTE     = 23.0   # position deviation (applied to both x and y residuals)
-W_HEADING = 20.0   # heading error
-W_SPEED   = 0.5    # speed tracking
-W_STEER   = 1.0    # steering deviation from curvature reference (see mpc_step)
-W_ACCEL   = 0.1    # acceleration regularisation
+W_CTE     =  8.0   # position deviation (applied to both x and y residuals)
+W_HEADING = 40.0   # heading error — must dominate W_CTE; heading IS the D-term for lateral tracking
+W_SPEED   =  0.5   # speed tracking
+W_STEER   =  1.0   # steering deviation from curvature reference (see mpc_step)
+W_ACCEL   =  0.1   # acceleration regularisation
 
 MPC_MIN_LOOKAHEAD_VEL = 2.0  # m/s — minimum arc speed for reference point spread
 MAX_DELTA_RATE = 3.0          # rad/s — post-solve steering rate cap; reduce if chattering persists
@@ -319,7 +319,18 @@ def create_mpc_solver(N: int, dt: float) -> AcadosOcpSolver:
     ocp.solver_options.qp_solver       = 'PARTIAL_CONDENSING_HPIPM'
     ocp.solver_options.print_level     = 0
 
-    return AcadosOcpSolver(ocp, json_file='roboracer_mpc.json')
+    solver = AcadosOcpSolver(ocp, json_file='roboracer_mpc.json')
+
+    # Push current module-level weights into the running solver so that weight
+    # changes take effect without a full recompile (acados supports runtime
+    # cost_set for LINEAR_LS).
+    W   = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_STEER, W_ACCEL])
+    W_e = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED])
+    for k in range(N):
+        solver.cost_set(k, 'W', W)
+    solver.cost_set(N, 'W', W_e)
+
+    return solver
 
 
 # ── MPC step ─────────────────────────────────────────────────────────────────
