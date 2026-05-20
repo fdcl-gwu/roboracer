@@ -53,7 +53,7 @@ STEER_MAX    = 880
 STEER_MIN    = 120
 STEER_CENTER = 512
 STEER_TRIM   = 20
-STEER_GAIN   = 1200  # servo units per radian of steering angle
+STEER_GAIN   = 750  # servo units per radian of steering angle
 
 
 # ── Vehicle constants (measured on FDCL RoboRacer) ───────────────────────────
@@ -68,17 +68,18 @@ DELTA_MAX  =  0.44  # rad, max front-wheel steering angle
 # ── MPC hyper-parameters ──────────────────────────────────────────────────────
 MPC_DT                = 0.025  # prediction step size (s) — must match main loop period
 MPC_N                 = 20     # default horizon steps
-MPC_MIN_LOOKAHEAD_VEL = 3.0   # m/s — minimum arc speed for reference spreading
-MAX_DELTA_RATE        = 6.5   # rad/s — hard bound on steering rate (control input)
+MPC_MIN_LOOKAHEAD_VEL = 5.0   # m/s — minimum arc speed for reference spreading
+MAX_DELTA_RATE        = 9.5   # rad/s — hard bound on steering rate (control input)
 
 # NONLINEAR_LS cost weights (on squared residuals).
 # Stage output h(x,u): [px, py, psi, v, delta, delta_dot, a]   dim=7
 # Terminal output h_e(x): [px, py, psi, v, delta]               dim=5
-W_CTE        = 30.0
-W_HEADING    =  8.0   # raised: heading is the primary path-tracking signal on a bicycle
+W_CTE        =  8.0
+W_HEADING    =  1.0   # heading anchors the chassis to the raceline tangent — modest pull, enough to break "rotate through exit"
 W_SPEED      =  0.5   # low: deemphasise speed — the external FF+PI throttle loop handles it
-W_DELTA      =  1.0   # feedforward pull toward curvature-implied steering angle
-W_DELTA_RATE =  5.0   # smoothness; reduced so the solver doesn't over-penalise cornering
+W_DELTA      =  2.5   # pull toward curvature-implied delta_ref (feedforward steering)
+W_DELTA_e    =  5.0   # terminal: penalty on residual delta — keeps unwind planned, but soft enough to coexist with heading penalty
+W_DELTA_RATE =  0.5   # mild rate smoothing; not so high that it fights heading correction
 W_ACCEL      =  0.1
 
 
@@ -256,7 +257,7 @@ def create_mpc_solver(N: int, dt: float, max_iter: int = 50) -> AcadosOcpSolver:
     ocp.cost.cost_type   = 'NONLINEAR_LS'
     ocp.cost.cost_type_e = 'NONLINEAR_LS'
     ocp.cost.W    = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_DELTA, W_DELTA_RATE, W_ACCEL])
-    ocp.cost.W_e  = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_DELTA])
+    ocp.cost.W_e  = np.diag([W_CTE, W_CTE, W_HEADING, W_SPEED, W_DELTA_e])
     ocp.cost.yref   = np.zeros(7)  # placeholder; overwritten each step
     ocp.cost.yref_e = np.zeros(5)
 
