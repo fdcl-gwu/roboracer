@@ -13,12 +13,12 @@
             "qpoases": "-lqpOASES_e"
         },
         "acados_version": "e0759960c",
-        "code_export_directory": "/mnt/c/Users/mark/roboracer/c_generated_code",
+        "code_export_directory": "/mnt/c/Users/mark/roboracer/c_generated_code_revised",
         "cython_include_dirs": [
             "/home/mark/miniconda3/envs/roboracer/lib/python3.14/site-packages/numpy/_core/include",
             "/home/mark/miniconda3/envs/roboracer/include/python3.14"
         ],
-        "json_file": "roboracer_mpc.json",
+        "json_file": "roboracer_mpc_revised.json",
         "os": "unix",
         "shared_lib_ext": ".so"
     },
@@ -39,20 +39,26 @@
             1
         ],
         "idxbx": [
-            3
+            3,
+            4
         ],
         "idxbx_0": [
             0,
             1,
             2,
-            3
+            3,
+            4
         ],
-        "idxbx_e": [],
+        "idxbx_e": [
+            3,
+            4
+        ],
         "idxbxe_0": [
             0,
             1,
             2,
-            3
+            3,
+            4
         ],
         "idxs_rev": [],
         "idxs_rev_0": [],
@@ -69,19 +75,24 @@
         "idxsphi_0": [],
         "idxsphi_e": [],
         "lbu": [
-            -0.44,
+            -9.5,
             -6.15
         ],
         "lbx": [
-            0.0
+            0.0,
+            -0.44
         ],
         "lbx_0": [
             0.0,
             0.0,
             0.0,
+            0.0,
             0.0
         ],
-        "lbx_e": [],
+        "lbx_e": [
+            0.0,
+            -0.44
+        ],
         "lg": [],
         "lg_e": [],
         "lh": [],
@@ -105,19 +116,24 @@
         "lsphi_0": [],
         "lsphi_e": [],
         "ubu": [
-            0.44,
+            9.5,
             6.15
         ],
         "ubx": [
-            15.0
+            15.0,
+            0.44
         ],
         "ubx_0": [
             0.0,
             0.0,
             0.0,
+            0.0,
             0.0
         ],
-        "ubx_e": [],
+        "ubx_e": [
+            15.0,
+            0.44
+        ],
         "ug": [],
         "ug_e": [],
         "uh": [],
@@ -142,165 +158,26 @@
         "usphi_e": []
     },
     "cost": {
-        "Vu": [
-            [
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0
-            ],
-            [
-                1.0,
-                0.0
-            ],
-            [
-                0.0,
-                1.0
-            ]
-        ],
-        "Vu_0": [
-            [
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0
-            ],
-            [
-                1.0,
-                0.0
-            ],
-            [
-                0.0,
-                1.0
-            ]
-        ],
-        "Vx": [
-            [
-                1.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                1.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                1.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                1.0
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                0.0
-            ]
-        ],
-        "Vx_0": [
-            [
-                1.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                1.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                1.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                1.0
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                0.0
-            ]
-        ],
-        "Vx_e": [
-            [
-                1.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                1.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                1.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                1.0
-            ]
-        ],
+        "Vu": [],
+        "Vu_0": [],
+        "Vx": [],
+        "Vx_0": [],
+        "Vx_e": [],
         "Vz": [],
         "Vz_0": [],
         "W": [
             [
-                23.0,
+                8.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.0,
+                8.0,
                 0.0,
                 0.0,
                 0.0,
@@ -309,16 +186,9 @@
             ],
             [
                 0.0,
-                23.0,
                 0.0,
+                1.0,
                 0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                20.0,
                 0.0,
                 0.0,
                 0.0
@@ -329,6 +199,7 @@
                 0.0,
                 0.5,
                 0.0,
+                0.0,
                 0.0
             ],
             [
@@ -336,10 +207,21 @@
                 0.0,
                 0.0,
                 0.0,
-                1.0,
+                2.5,
+                0.0,
                 0.0
             ],
             [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.3,
+                0.0
+            ],
+            [
+                0.0,
                 0.0,
                 0.0,
                 0.0,
@@ -350,7 +232,17 @@
         ],
         "W_0": [
             [
-                23.0,
+                8.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                0.0,
+                8.0,
                 0.0,
                 0.0,
                 0.0,
@@ -359,16 +251,9 @@
             ],
             [
                 0.0,
-                23.0,
                 0.0,
+                1.0,
                 0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                20.0,
                 0.0,
                 0.0,
                 0.0
@@ -379,6 +264,7 @@
                 0.0,
                 0.5,
                 0.0,
+                0.0,
                 0.0
             ],
             [
@@ -386,10 +272,21 @@
                 0.0,
                 0.0,
                 0.0,
-                1.0,
+                2.5,
+                0.0,
                 0.0
             ],
             [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.3,
+                0.0
+            ],
+            [
+                0.0,
                 0.0,
                 0.0,
                 0.0,
@@ -400,28 +297,39 @@
         ],
         "W_e": [
             [
-                23.0,
+                8.0,
+                0.0,
                 0.0,
                 0.0,
                 0.0
             ],
             [
                 0.0,
-                23.0,
+                8.0,
+                0.0,
                 0.0,
                 0.0
             ],
             [
                 0.0,
                 0.0,
-                20.0,
+                1.0,
+                0.0,
                 0.0
             ],
             [
                 0.0,
                 0.0,
                 0.0,
-                0.5
+                0.5,
+                0.0
+            ],
+            [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                5.0
             ]
         ],
         "Zl": [],
@@ -443,9 +351,9 @@
         "cost_source_ext_cost": null,
         "cost_source_ext_cost_0": null,
         "cost_source_ext_cost_e": null,
-        "cost_type": "LINEAR_LS",
-        "cost_type_0": "LINEAR_LS",
-        "cost_type_e": "LINEAR_LS",
+        "cost_type": "NONLINEAR_LS",
+        "cost_type_0": "NONLINEAR_LS",
+        "cost_type_e": "NONLINEAR_LS",
         "cost_types": [
             "LINEAR_LS",
             "NONLINEAR_LS",
@@ -459,6 +367,7 @@
             0.0,
             0.0,
             0.0,
+            0.0,
             0.0
         ],
         "yref_0": [
@@ -467,9 +376,11 @@
             0.0,
             0.0,
             0.0,
+            0.0,
             0.0
         ],
         "yref_e": [
+            0.0,
             0.0,
             0.0,
             0.0,
@@ -483,13 +394,13 @@
         "zu_e": []
     },
     "dims": {
-        "N": 20,
+        "N": 25,
         "n_global_data": 0,
         "nbu": 2,
-        "nbx": 1,
-        "nbx_0": 4,
-        "nbx_e": 0,
-        "nbxe_0": 4,
+        "nbx": 2,
+        "nbx_0": 5,
+        "nbx_e": 2,
+        "nbxe_0": 5,
         "ng": 0,
         "ng_e": 0,
         "nh": 0,
@@ -518,20 +429,30 @@
         "nsphi_0": 0,
         "nsphi_e": 0,
         "nu": 2,
-        "nx": 4,
-        "nx_next": 4,
-        "ny": 6,
-        "ny_0": 6,
-        "ny_e": 4,
+        "nx": 5,
+        "nx_next": 5,
+        "ny": 7,
+        "ny_0": 7,
+        "ny_e": 5,
         "nz": 0
     },
     "external_function_files_model": [
-        "roboracer_bicycle_model/roboracer_bicycle_expl_ode_fun.c",
-        "roboracer_bicycle_model/roboracer_bicycle_expl_vde_forw.c",
-        "roboracer_bicycle_model/roboracer_bicycle_expl_vde_adj.c"
+        "roboracer_revised_bicycle_model/roboracer_revised_bicycle_expl_ode_fun.c",
+        "roboracer_revised_bicycle_model/roboracer_revised_bicycle_expl_vde_forw.c",
+        "roboracer_revised_bicycle_model/roboracer_revised_bicycle_expl_vde_adj.c"
     ],
-    "external_function_files_ocp": [],
-    "hash": "320c9c9eb4383be0fe43de57b63e5fcd",
+    "external_function_files_ocp": [
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_0_fun.c",
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_0_fun_jac_ut_xt.c",
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_0_hess.c",
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_fun.c",
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_fun_jac_ut_xt.c",
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_hess.c",
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_e_fun.c",
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_e_fun_jac_ut_xt.c",
+        "roboracer_revised_bicycle_cost/roboracer_revised_bicycle_cost_y_e_hess.c"
+    ],
+    "hash": "d36bfab237eee0bce786ad1553d51449",
     "model": {
         "con_h_expr": [],
         "con_h_expr_0": [],
@@ -560,9 +481,9 @@
         "cost_r_in_psi_expr": [],
         "cost_r_in_psi_expr_0": [],
         "cost_r_in_psi_expr_e": [],
-        "cost_y_expr": [],
-        "cost_y_expr_0": [],
-        "cost_y_expr_e": [],
+        "cost_y_expr": "MX(vertcat(x[0], x[1], x[2], x[3], x[4], u[0], u[1]))",
+        "cost_y_expr_0": "MX(vertcat(x[0], x[1], x[2], x[3], x[4], u[0], u[1]))",
+        "cost_y_expr_e": "MX(vertcat(x[0], x[1], x[2], x[3], x[4]))",
         "disc_dyn_custom_hess_ux_expr": [],
         "disc_dyn_custom_jac_ux_expr": [],
         "disc_dyn_expr": [],
@@ -575,6 +496,9 @@
         "dyn_impl_dae_fun_jac": null,
         "dyn_impl_dae_jac": null,
         "expression_names": [
+            "cost_y_expr",
+            "cost_y_expr_0",
+            "cost_y_expr_e",
             "f_expl_expr",
             "f_impl_expr",
             "p",
@@ -585,15 +509,15 @@
             "xdot",
             "z"
         ],
-        "f_expl_expr": "MX(@1=x[3], @2=x[2], vertcat((@1*cos(@2)), (@1*sin(@2)), ((@1/0.324)*tan(u[0])), u[1]))",
-        "f_impl_expr": "MX(@1=x[3], @2=x[2], (xdot-vertcat((@1*cos(@2)), (@1*sin(@2)), ((@1/0.324)*tan(u[0])), u[1])))",
+        "f_expl_expr": "MX(@1=x[3], @2=x[2], vertcat((@1*cos(@2)), (@1*sin(@2)), ((@1/0.324)*tan(x[4])), u[1], u[0]))",
+        "f_impl_expr": "MX(@1=x[3], @2=x[2], (xdot-vertcat((@1*cos(@2)), (@1*sin(@2)), ((@1/0.324)*tan(x[4])), u[1], u[0])))",
         "gnsf_model": null,
-        "name": "roboracer_bicycle",
+        "name": "roboracer_revised_bicycle",
         "nu_original": null,
         "p": "MX(0x1)",
         "p_global": "MX(0x1)",
         "pi": "MX(pi)",
-        "serialized_expressions": "jhpnnagiieahaaaadaaaaaaaaaaaaaaaaaeboaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaaegiaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaabaaaaaaaihegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaaegfaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegoaaaaaaabaaaaaaaaaaaaaaacheaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaoaaaaaaaegdaaaaaaabacaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaachfaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaaegnaaaaaaabaaaaaaaaaaaaaaacheaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaanaaaaaaaegdaaaaaaabacaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaachhaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaaegmcaaaaaaeedclnjpohkgmlenpdaaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaegeaaaaaaabacaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaeaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaaeggaaaaaaaaaaaaaaacaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaafhegfeaaaaaacgbaaaaaaaaaaaaaaachmaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegpaaaaaaabaaaaaaaaaaaaaaachnaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaapaaaaaaaegdaaaaaaabacaaaaaaaaaaaaaaachkaaaaaaaaaaaaaaachoaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachmaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegndaaaaaaeaaaaaaaaaaaaaaachgaaaaaaaaaaaaaaachiaaaaaaaaaaaaaaachpaaaaaaaaaaaaaaachabaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaebbbaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaeaaaaaaaihegpgehchbaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaacheaaaaaaaaaaaaaaachfaaaaaaaaaaaaaaachgaaaaaaaaaaaaaaachhaaaaaaaaaaaaaaachiaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachkaaaaaaaaaaaaaaachmaaaaaaaaaaaaaaachnaaaaaaaaaaaaaaachoaaaaaaaaaaaaaaachpaaaaaaaaaaaaaaachabaaaaaaaaaaaaaachbbaaaaaaaaaaaaaaegcaaaaaaaaacaaaaaaaaaaaaaaachcbaaaaaaaaaaaaaachbbaaaaaaaaaaaaaachaaaaaaaaaaaaaaaacaaaaaaachdbaaaaaaaaaaaaaaebaaaaaaaaaaaaaaaaegmcaaaaaaadaaaaaaaaaaaaaaaaegeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaebaaaaaaaaaaaaaaaaegmcaaaaaaadaaaaaaaaaaaaaaaachebaaaaaaaaaaaaaaebbaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaacaaaaaaaahjgchhbaaaaaaaaaaaaaaebbaaaaaaaaaaaaaaachmaaaaaaaaaaaaaaachmaaaaaaaaaaaaaaaebbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaaebbaaaaaaaaaaaaaaachcbaaaaaaaaaaaaaachcbaaaaaaaaaaaaaaebaaaaaaaaaaaaaaaaegmcaaaaaaadaaaaaaaaaaaaaaaachebaaaaaaaaaaaaaa",
+        "serialized_expressions": "jhpnnagiieahaaaadaaaaaaaaaaaaaaaaaebjaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaaegjaaaaaaaaaaaaaaafaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaafaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaabaaaaaaaihegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaaegfaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaafaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaaeggaaaaaaaaaaaaaaacaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaafhegfeaaaaaacgbaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegndaaaaaahaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaacheaaaaaaaaaaaaaaachfaaaaaaaaaaaaaaachgaaaaaaaaaaaaaaachhaaaaaaaaaaaaaaachkaaaaaaaaaaaaaaachlaaaaaaaaaaaaaaaeglaaaaaaaaaaaaaaahaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaahaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaafaaaaaaaaaaaaaaagaaaaaaaaaaaaaaaebjaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaacheaaaaaaaaaaaaaaachfaaaaaaaaaaaaaaachgaaaaaaaaaaaaaaachhaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachkaaaaaaaaaaaaaaachlaaaaaaaaaaaaaaachnaaaaaaaaaaaaaaaebgaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaafaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegndaaaaaafaaaaaaaaaaaaaaachoaaaaaaaaaaaaaaachpaaaaaaaaaaaaaaachabaaaaaaaaaaaaaachbbaaaaaaaaaaaaaachcbaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaebpaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegoaaaaaaabaaaaaaaaaaaaaaachfbaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaoaaaaaaaegdaaaaaaabacaaaaaaaaaaaaaaachebaaaaaaaaaaaaaachgbaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaaegnaaaaaaabaaaaaaaaaaaaaaachfbaaaaaaaaaaaaaachcaaaaaaaaaaaaaaanaaaaaaaegdaaaaaaabacaaaaaaaaaaaaaaachebaaaaaaaaaaaaaachibaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaaegmcaaaaaaeedclnjpohkgmlenpdaaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaegeaaaaaaabacaaaaaaaaaaaaaaachebaaaaaaaaaaaaaachkbaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaeaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaafaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegpaaaaaaabaaaaaaaaaaaaaaachmbaaaaaaaaaaaaaachcaaaaaaaaaaaaaaapaaaaaaaegdaaaaaaabacaaaaaaaaaaaaaaachlbaaaaaaaaaaaaaachnbaaaaaaaaaaaaaachcaaaaaaaaaaaaaaadaaaaaaachjaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegfeaaaaaacgbaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaegndaaaaaafaaaaaaaaaaaaaaachhbaaaaaaaaaaaaaachjbaaaaaaaaaaaaaachobaaaaaaaaaaaaaachpbaaaaaaaaaaaaaachacaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaebcbaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaeaaaaaaaihegpgehchbaaaaaaaaaaaaaaachebaaaaaaaaaaaaaachfbaaaaaaaaaaaaaachgbaaaaaaaaaaaaaachhbaaaaaaaaaaaaaachibaaaaaaaaaaaaaachjbaaaaaaaaaaaaaachkbaaaaaaaaaaaaaachlbaaaaaaaaaaaaaachmbaaaaaaaaaaaaaachnbaaaaaaaaaaaaaachobaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachpbaaaaaaaaaaaaaachacaaaaaaaaaaaaaachbcaaaaaaaaaaaaaaegcaaaaaaaaacaaaaaaaaaaaaaaachccaaaaaaaaaaaaaachbcaaaaaaaaaaaaaachaaaaaaaaaaaaaaaacaaaaaaachdcaaaaaaaaaaaaaaebaaaaaaaaaaaaaaaaegmcaaaaaaadaaaaaaaaaaaaaaaaegeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaebaaaaaaaaaaaaaaaaegmcaaaaaaadaaaaaaaaaaaaaaaachecaaaaaaaaaaaaaaebbaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaacaaaaaaaahjgchhcaaaaaaaaaaaaaaebbaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaachjaaaaaaaaaaaaaaaebbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaaebbaaaaaaaaaaaaaaachccaaaaaaaaaaaaaachccaaaaaaaaaaaaaaebaaaaaaaaaaaaaaaaegmcaaaaaaadaaaaaaaaaaaaaaaachecaaaaaaaaaaaaaa",
         "t": [],
         "t0": null,
         "t_label": "t",
@@ -607,19 +531,20 @@
             "x0",
             "x1",
             "x2",
-            "x3"
+            "x3",
+            "x4"
         ],
         "xdot": "MX(xdot)",
         "z": "MX(0x1)"
     },
-    "name": "roboracer_bicycle",
+    "name": "roboracer_revised_bicycle",
     "p_global_values": [],
     "parameter_values": [],
     "problem_class": "OCP",
     "ros_opts": null,
     "simulink_opts": null,
     "solver_options": {
-        "N_horizon": 20,
+        "N_horizon": 25,
         "Tsim": 0.025,
         "adaptive_levenberg_marquardt_lam": 5.0,
         "adaptive_levenberg_marquardt_mu0": 0.001,
@@ -633,6 +558,11 @@
         "collocation_type": "GAUSS_LEGENDRE",
         "cost_discretization": "EULER",
         "cost_scaling": [
+            0.025,
+            0.025,
+            0.025,
+            0.025,
+            0.025,
             0.025,
             0.025,
             0.025,
@@ -712,10 +642,10 @@
         "nlp_solver_warm_start_first_qp_from_nlp": false,
         "print_level": 0,
         "qp_solver": "PARTIAL_CONDENSING_HPIPM",
-        "qp_solver_cond_N": 20,
+        "qp_solver_cond_N": 25,
         "qp_solver_cond_block_size": null,
         "qp_solver_cond_ric_alg": 1,
-        "qp_solver_iter_max": 50,
+        "qp_solver_iter_max": 200,
         "qp_solver_mu0": 0.0,
         "qp_solver_ric_alg": 1,
         "qp_solver_t0_init": 2,
@@ -758,9 +688,19 @@
             0.4250000000000001,
             0.4500000000000001,
             0.47500000000000014,
-            0.5000000000000001
+            0.5000000000000001,
+            0.5250000000000001,
+            0.5500000000000002,
+            0.5750000000000002,
+            0.6000000000000002,
+            0.6250000000000002
         ],
         "sim_method_jac_reuse": [
+            0,
+            0,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -804,9 +744,19 @@
             4,
             4,
             4,
+            4,
+            4,
+            4,
+            4,
+            4,
             4
         ],
         "sim_method_num_steps": [
+            1,
+            1,
+            1,
+            1,
+            1,
             1,
             1,
             1,
@@ -831,8 +781,13 @@
         "solution_sens_qp_t_lam_min": 1e-09,
         "store_iterates": false,
         "tau_min": 0.0,
-        "tf": 0.5,
+        "tf": 0.625,
         "time_steps": [
+            0.025,
+            0.025,
+            0.025,
+            0.025,
+            0.025,
             0.025,
             0.025,
             0.025,

@@ -75,11 +75,11 @@ MAX_DELTA_RATE        = 9.5   # rad/s — hard bound on steering rate (control i
 # Stage output h(x,u): [px, py, psi, v, delta, delta_dot, a]   dim=7
 # Terminal output h_e(x): [px, py, psi, v, delta]               dim=5
 W_CTE        =  8.0
-W_HEADING    =  1.0   # heading anchors the chassis to the raceline tangent — modest pull, enough to break "rotate through exit"
+W_HEADING    =  1.0   # heading anchors chassis to raceline tangent — kept small to stay numerically stable at startup
 W_SPEED      =  0.5   # low: deemphasise speed — the external FF+PI throttle loop handles it
 W_DELTA      =  2.5   # pull toward curvature-implied delta_ref (feedforward steering)
-W_DELTA_e    =  5.0   # terminal: penalty on residual delta — keeps unwind planned, but soft enough to coexist with heading penalty
-W_DELTA_RATE =  0.5   # mild rate smoothing; not so high that it fights heading correction
+W_DELTA_e    =  5.0   # terminal: penalty on residual delta — keeps unwind planned
+W_DELTA_RATE =  0.3   # mild rate smoothing
 W_ACCEL      =  0.1
 
 
@@ -399,9 +399,13 @@ def mpc_step(
             0.0,        # delta_dot target = 0 (penalise rate)
             0.0,        # a target = 0 (regularise acceleration)
         ]))
-        # Hard cap: state x[k+1] cannot exceed the reference velocity at that stage.
-        # Covers stages 1..N — the loop at k=N-1 sets the terminal (stage N) cap too.
-        solver.set(k + 1, 'ubx', np.array([v_ref_k, DELTA_MAX]))
+        # Hard cap on velocity at stage k+1: clamped to whatever the vehicle could possibly
+        # decelerate to from x0 within (k+1) steps, so the constraint is always feasible.
+        # Otherwise, when v_actual > v_ref by more than MAX_DECEL·dt, the QP goes infeasible
+        # (manifests as HPIPM MINSTEP → acados status 4 → emergency-stop loop).
+        v_min_reachable = state.v + MAX_DECEL * (k + 1) * mpc_dt   # MAX_DECEL is negative
+        v_cap           = max(v_ref_k, v_min_reachable)
+        solver.set(k + 1, 'ubx', np.array([v_cap, DELTA_MAX]))
 
     arc_e       = closest_arc + N * lookahead_vel * mpc_dt
     ref_e       = raceline.index_at_arc_length(arc_e)
