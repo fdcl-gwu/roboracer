@@ -68,18 +68,26 @@ DELTA_MAX  =  0.44  # rad, max front-wheel steering angle
 # ── MPC hyper-parameters ──────────────────────────────────────────────────────
 MPC_DT                = 0.025  # prediction step size (s) — must match main loop period
 MPC_N                 = 20     # default horizon steps
-MPC_MIN_LOOKAHEAD_VEL = 5.0   # m/s — minimum arc speed for reference spreading
+MPC_MIN_LOOKAHEAD_VEL = 1.5   # m/s — minimum lookahead speed, keeps references reachable when stopped
 MAX_DELTA_RATE        = 9.5   # rad/s — hard bound on steering rate (control input)
+
+# Actuator lag compensation: forward-predict state by this many steps before pinning x0,
+# using the currently-applied steering command. Compensates for servo + comms transport delay.
+# Tune up if the car still rebounds; tune down if the car over-anticipates corners.
+#   0 → no compensation
+#   1 → ~25 ms of lag (typical hobby servo + serial radio)
+#   2 → ~50 ms (heavier servo or longer transport)
+STEERING_DELAY_STEPS = 1
 
 # NONLINEAR_LS cost weights (on squared residuals).
 # Stage output h(x,u): [px, py, psi, v, delta, delta_dot, a]   dim=7
 # Terminal output h_e(x): [px, py, psi, v, delta]               dim=5
 W_CTE        =  8.0
-W_HEADING    =  1.0   # heading anchors chassis to raceline tangent — kept small to stay numerically stable at startup
+W_HEADING    =  1.5   # heading anchors chassis to raceline tangent — moderate, won't overdrive δ at low-speed tight references
 W_SPEED      =  0.5   # low: deemphasise speed — the external FF+PI throttle loop handles it
 W_DELTA      =  2.5   # pull toward curvature-implied delta_ref (feedforward steering)
 W_DELTA_e    =  5.0   # terminal: penalty on residual delta — keeps unwind planned
-W_DELTA_RATE =  0.3   # mild rate smoothing
+W_DELTA_RATE =  1.5   # damping: prevents δ chatter when heading penalty drives aggressive corrections
 W_ACCEL      =  0.1
 
 
@@ -313,7 +321,10 @@ def initialize_solver_from_raceline(
     prev_delta: float = 0.0,
 ) -> None:
     """Seed the MPC warm-start from raceline curvature before the first solve."""
-    lookahead_vel = max(state.v, MPC_MIN_LOOKAHEAD_VEL)
+    # Velocity-aware lookahead: average of current and max-attainable speed over the horizon.
+    # Keeps reference spread proportional to what the vehicle can actually reach.
+    v_attainable  = min(MAX_SPEED, state.v + MAX_ACCEL * N * dt)
+    lookahead_vel = max(0.5 * (state.v + v_attainable), MPC_MIN_LOOKAHEAD_VEL)
     s0 = raceline.arc_lengths[closest_index]
 
     # Build delta_seq[0..N] from consecutive raceline headings
@@ -363,8 +374,23 @@ def mpc_step(
 ) -> Tuple[ControlInput, np.ndarray, dict]:
     """Run one RTI MPC step. Returns the optimal control, planned (x,y) trajectory, and solver diagnostics."""
 
-    # ── Pin initial state ─────────────────────────────────────────────────────
-    x0 = np.array([state.x, state.y, state.psi, state.v, prev_delta])
+    # ── Pin initial state (with optional actuator-lag prediction) ─────────────
+    # Roll the measured state forward by STEERING_DELAY_STEPS·dt using the steering
+    # command the servo is still applying (prev_delta). The MPC then solves from
+    # where the car will actually be when its NEW commands take effect, eliminating
+    # the rebound that comes from planning with a "now" state that's already stale.
+    if STEERING_DELAY_STEPS > 0:
+        dt_lag = STEERING_DELAY_STEPS * mpc_dt
+        x0_x   = state.x   + state.v * math.cos(state.psi) * dt_lag
+        x0_y   = state.y   + state.v * math.sin(state.psi) * dt_lag
+        x0_psi = state.psi + state.v / WHEELBASE * math.tan(prev_delta) * dt_lag
+        x0_v   = state.v
+        # Advance arc position by lag-induced motion so references stay aligned with
+        # the predicted state, not the stale measured one.
+        closest_arc = closest_arc + state.v * dt_lag
+    else:
+        x0_x, x0_y, x0_psi, x0_v = state.x, state.y, state.psi, state.v
+    x0 = np.array([x0_x, x0_y, x0_psi, x0_v, prev_delta])
     solver.set(0, 'lbx', x0)
     solver.set(0, 'ubx', x0)
 
@@ -373,9 +399,14 @@ def mpc_step(
     # delta_ref is the curvature-implied steering angle at each stage: δ = atan2(L·dψ, v·dt).
     # It acts as a feedforward target so the solver knows what angle to adopt, not just
     # where to be — this dramatically improves convergence from any warm-start.
-    lookahead_vel = max(state.v, MPC_MIN_LOOKAHEAD_VEL)
-    psi_unwrapped = state.psi
-    psi_prev      = state.psi
+    # Velocity-aware lookahead: spread references by what the car can actually reach
+    # over the horizon, not by a fixed minimum speed. At standstill this gives a tight
+    # near-field cost target instead of an unreachable horizon endpoint that the solver
+    # would otherwise chord across (cutting through loop interiors on figure-8 tracks).
+    v_attainable  = min(MAX_SPEED, x0_v + MAX_ACCEL * N * mpc_dt)
+    lookahead_vel = max(0.5 * (x0_v + v_attainable), MPC_MIN_LOOKAHEAD_VEL)
+    psi_unwrapped = x0_psi
+    psi_prev      = x0_psi
 
     for k in range(N):
         arc_k   = closest_arc + (k + 1) * lookahead_vel * mpc_dt
@@ -403,7 +434,7 @@ def mpc_step(
         # decelerate to from x0 within (k+1) steps, so the constraint is always feasible.
         # Otherwise, when v_actual > v_ref by more than MAX_DECEL·dt, the QP goes infeasible
         # (manifests as HPIPM MINSTEP → acados status 4 → emergency-stop loop).
-        v_min_reachable = state.v + MAX_DECEL * (k + 1) * mpc_dt   # MAX_DECEL is negative
+        v_min_reachable = x0_v + MAX_DECEL * (k + 1) * mpc_dt   # MAX_DECEL is negative
         v_cap           = max(v_ref_k, v_min_reachable)
         solver.set(k + 1, 'ubx', np.array([v_cap, DELTA_MAX]))
 
