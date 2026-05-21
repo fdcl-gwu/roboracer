@@ -1,7 +1,7 @@
 # RoboRacer MPC Racing
 
 Nonlinear MPC controller for the RoboRacer platform using [acados](https://github.com/acados/acados) and CasADi.
-Mirrors `mppi_racing.py` in structure — same Vicon interface, same serial protocol, same lap counting — with the MPPI solver replaced by a deterministic SQP-RTI solver.
+Mirrors `mppi_racing.py` in structure — same Vicon interface, same serial protocol, same lap counting — with the MPPI solver replaced by a deterministic SQP-RTI solver. The state is augmented with `δ` so steering rate is the control input, and a per-stage curvature-implied `δ_ref` feedforward is supplied via a NONLINEAR_LS cost.
 
 ---
 
@@ -11,12 +11,16 @@ Mirrors `mppi_racing.py` in structure — same Vicon interface, same serial prot
 |---|---|---|
 | Algorithm | Stochastic sampling (300 rollouts) | Deterministic NMPC, SQP-RTI |
 | Dynamics | Forward Euler + velocity clipping | Continuous ODE integrated with ERK4 |
-| Velocity bound | Clipped in state update | Inequality constraint `0 ≤ v ≤ 15 m/s` |
-| Warm start | Explicit `working_sequence` array; first iter seeded from raceline curvature | acados warm-starts internally; first iter seeded from raceline curvature |
-| Steering effort penalty | Rate `(δ_t − δ_{t−1})²` (no fight against sustained corners) | Absolute magnitude `δ²` (LINEAR_LS limitation) |
+| State | `[X, Y, ψ, v]`, control `[δ, a]` | `[X, Y, ψ, v, δ]`, control `[δ̇, a]` |
+| Velocity bound | Clipped in state update | `0 ≤ v ≤ 15 m/s` plus per-stage feasibility-tightened cap |
+| Steering rate bound | None (penalised in cost) | Hard input bound `\|δ̇\| ≤ 9.5 rad/s` |
+| Warm start | Explicit `working_sequence` array, first iter from raceline curvature | acados internal warm-start, first iter from raceline curvature |
+| Steering cost | Rate `(δ_t − δ_{t−1})²` only | `δ̇` rate penalty + per-stage curvature-implied `δ_ref` feedforward (NONLINEAR_LS) |
+| Actuator lag handling | None | `x0` forward-rolled by `STEERING_DELAY_STEPS · dt` using `prev_delta` |
 | Startup cost | None | ~30 s C-code compilation on first run |
 | `--rollouts` | Present | Not applicable, removed |
 | `--mpc-dt` | Not present | Prediction step size (s) |
+| `--max-iter` | Not present | QP iteration cap per solve |
 
 ---
 
@@ -125,7 +129,7 @@ python3 -c "from acados_template import AcadosOcp; print('acados OK')"
 
 ## Generated files
 
-On the **first run**, `mpc_racing.py` calls acados to generate C code, compile it into a shared library, and store the result. This takes roughly 30 seconds and produces two artefacts in the working directory:
+On the first run, `mpc_racing.py` calls acados to generate C code, compile it into a shared library, and store the result. This takes roughly 30 seconds and produces two artefacts in the working directory:
 
 ```
 roboracer_mpc.json       # serialised OCP definition
@@ -150,13 +154,14 @@ python3 mpc_racing.py [options]
 |---|---|---|
 | `--raceline PATH` | `raceline.csv` | Path to raceline CSV |
 | `--port PORT` | `/dev/ttyUSB0` | Serial port to car |
-| `--laps N` | `3` | Laps before stopping; `0` = run forever |
+| `--laps N` | `10` | Laps before stopping; `0` = run forever |
 | `--yaw-correction F` | `0.0` | Yaw offset added to Vicon heading (rad) |
 | `--speed-gain F` | `20.0` | Feedforward throttle gain (`throttle_ff = gain × v_ref`) |
 | `--speed-kp F` | `5.0` | Proportional gain on speed error |
 | `--max-throttle N` | `200` | Maximum throttle command (hard cap) |
 | `--horizon N` | `20` | MPC horizon steps |
 | `--mpc-dt F` | `0.025` | Prediction step size in seconds (horizon time = N × dt) — must match the main loop period |
+| `--max-iter N` | `50` | Maximum QP iterations per SQP-RTI solve |
 | `--subject NAME` | `UGV` | Vicon subject name |
 | `--server IP` | `192.168.11.2` | Vicon server IP |
 | `--simulation` | (flag) | Run without Vicon or radio — simulate the bicycle model in-process |
@@ -204,27 +209,50 @@ Once the car tracks cleanly at low speed, raise `--max-throttle` in steps of 20 
 
 **`--horizon` and `--mpc-dt`**
 
-The total prediction horizon is `N × dt` seconds. The default (20 × 0.025 s = 0.5 s) means the solver looks half a second ahead. At 4 m/s this covers ~2 m of track — enough for the corners on `raceline.csv` and `figure_eight.csv`. For faster speeds or tighter corners, increase `--horizon`. `--mpc-dt` should **stay equal to the main loop period** (`time.sleep(0.025)`); breaking that match introduces a systematic understeer because the model predicts inputs are applied for longer than they actually are.
+The total prediction horizon is `N × dt` seconds. The default (20 × 0.025 s = 0.5 s) means the solver looks half a second ahead. At 4 m/s this covers ~2 m of track — enough for the corners on `raceline.csv` and `figure_eight.csv`. For faster speeds or tighter corners, increase `--horizon`. `--mpc-dt` should stay equal to the main loop period (`time.sleep(0.025)`); breaking that match introduces a systematic understeer because the model predicts inputs are applied for longer than they actually are.
 
 Note that changing either of these requires deleting the cached solver (see [Generated files](#generated-files)).
 
-**Cost weights** (`W_CTE`, `W_HEADING`, `W_SPEED`, `W_STEER`, `W_ACCEL` in source)
+**`--max-iter`**
 
-These are not currently exposed as CLI arguments because changing them requires recompiling the solver. Edit them directly at the top of `mpc_racing.py`, then delete `c_generated_code/` and `roboracer_mpc.json` before running.
+QP iteration cap per SQP-RTI step. Default 50. Raise it if persistent status `2` (max-iter exceeded) prints through hard corners; lower it to force faster solves at the cost of accepting partial QP solutions.
 
-| Weight | Default | Effect of increasing |
+**Servo / actuator-lag compensation (`STEERING_DELAY_STEPS`)**
+
+The servo + radio + firmware path introduces a transport delay between command issue and wheel motion. Solving from the measured state ignores that delay, so the loop oscillates: the solver issues a correction, the servo arrives late, the next solve counter-corrects.
+
+Before pinning `x0`, the measured state is forward-rolled by `STEERING_DELAY_STEPS · dt` seconds along the kinematic model using the steering command the servo is still applying (`prev_delta`). The reference arc position is advanced by the same `v · dt_lag` so the per-stage references stay aligned with the predicted state.
+
+```python
+STEERING_DELAY_STEPS = 7.0   # ≈ 175 ms at dt = 25 ms
+```
+
+Source-file constant, not a CLI flag — tuning is rare and platform-specific. Tune up if the car still rebounds out of corners; tune down if it over-anticipates corner entries.
+
+**Cost weights** (`W_CTE`, `W_HEADING`, `W_SPEED`, `W_DELTA`, `W_DELTA_e`, `W_DELTA_RATE`, `W_ACCEL`)
+
+Not exposed as CLI arguments — changes require recompiling the solver. Edit the constants at the top of `mpc_racing.py`, then delete `c_generated_code/` and `roboracer_mpc.json`.
+
+The cost is NONLINEAR_LS so the stage residual can carry a per-stage curvature-implied steering reference `δ_ref`. Stage residual: `[px, py, ψ, v, δ, δ̇, a]` (dim 7). Terminal: `[px, py, ψ, v, δ]` (dim 5).
+
+| Weight | Default | Role |
 |---|---|---|
-| `W_CTE` | 23.0 | Tighter lateral tracking; may increase steering oscillation |
-| `W_HEADING` | 20.0 | Faster heading correction; may cause overshoot |
-| `W_SPEED` | 0.5 | Closer speed tracking; interacts with throttle P-controller |
-| `W_STEER` | 1.0 | Smoother steering. **LINEAR_LS penalises absolute magnitude `δ²`, not rate** (unlike MPPI). Too large will widen the racing line through corners |
-| `W_ACCEL` | 0.1 | Penalises aggressive acceleration commands |
+| `W_CTE` | 48.0 | `X` and `Y` tracking — primary error term |
+| `W_HEADING` | 1.5 | Heading anchoring to the raceline tangent |
+| `W_SPEED` | 0.1 | Low — throttle loop owns longitudinal control |
+| `W_DELTA` | 0.75 | Pull `δ_k` toward the curvature-implied `δ_ref` |
+| `W_DELTA_e` | 0.005 | Terminal `δ`; small so steering can stay wound in at horizon end |
+| `W_DELTA_RATE` | 0.009 | Steering-rate damping |
+| `W_ACCEL` | 0.1 | Acceleration regularisation |
 
-Other implementation details worth knowing about (no tuning required, but useful when debugging):
+Other details:
 
-- **Velocity-based lookahead.** The MPC's reference projection along the raceline uses `max(state.v, 0.8 m/s)` rather than `v_ref`. Same rationale as MPPI: prevents the reference from jumping several metres ahead of a stationary car at startup.
-- **Reference-heading unwrapping.** The raceline's `psi_ref` values live in `[−π, π]` from `atan2`, but the dynamics model integrates `ψ` without wrapping. Each stage's reference heading is unwrapped to stay near the previous stage's value, eliminating the huge spurious residual that would otherwise appear at the figure-8's `±π` crossing.
-- **Raceline-curvature warm-start.** On the first iteration before acados has any previous solve to inherit from, the primal trajectory is seeded with `δ_k = atan2(L · Δψ_k, v · dt)` for each stage and the state guesses are walked along the raceline waypoints with a continuous ψ. Without this, the very first SQP-RTI step can return nonsense.
+- **Augmented state.** State `[X, Y, ψ, v, δ]`, control `[δ̇, a]`. The applied steering is read from the `δ` state at stage 1 of the solved trajectory, not from `u_0` — ERK4-consistent and respects `|δ| ≤ δ_max` by construction.
+- **Velocity-aware lookahead.** `v_look = max(½(v + v_attainable), 1.5 m/s)` with `v_attainable = min(v_max, v + a_max · N · dt)`. Using `v` alone leaves the reference too short during acceleration; the average term stretches the spread to what the car can actually reach. Eliminates the chord-across-loop-interior failure mode on the figure-8.
+- **Feasibility-guaranteed speed cap.** Each stage's `ubx` on `v` is set to `max(v_ref_k, v + a_min · k · dt)`. Without this, an over-speed initial condition against a slow reference produces an infeasible QP (HPIPM MINSTEP → acados status 4 → emergency stop).
+- **Reference-heading unwrapping.** `psi_ref` from `atan2` lives in `[−π, π]` but the dynamics integrate `ψ` unbounded. Each stage's reference heading is unwrapped to stay near the previous stage's value, killing the spurious residual at the figure-8's `±π` crossing.
+- **Curvature-implied `δ_ref`.** Each stage's reference includes `δ_ref = atan2(L · Δψ_k, v_look · dt)` — the geometric steering angle that tracks the local arc. Lets the solver use that angle directly rather than recover it from CTE/heading pressure.
+- **First-iteration warm-start.** Stage states seeded with the same `δ_k = atan2(L · Δψ_k, v · dt)`, control `δ̇_k` from the finite difference, position/heading walked along raceline waypoints with unwrapped ψ. Acados warm-starts internally on subsequent solves.
 
 **Solver status warnings**
 
