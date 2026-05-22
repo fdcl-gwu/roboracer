@@ -1,8 +1,9 @@
 \documentclass[11pt]{article}
 \usepackage{amsmath, amssymb, bm}
 \usepackage{geometry}
+\usepackage{graphicx}
 \usepackage{hyperref}
-\usepackage{parskip} 
+\usepackage{parskip}
 \usepackage{booktabs}
 \usepackage{array}
 
@@ -773,8 +774,7 @@ and cornering stiffnesses $C_f$, $C_r$ identified from vehicle tests.
 \subsection{Pacejka ``Magic Formula'' Tire Model}
 
 For cornering beyond the linear regime (slipping or near-limit driving), the
-linear tire force model fails.  The Pacejka magic formula (Pacejka,
-2012) captures the full nonlinear force--slip curve:
+linear tire force model fails.  The Pacejka magic formula captures the full nonlinear force--slip curve:
 
 \[
 F_y(\alpha) = D\,\sin\!\Big[C\arctan\!\Big(B\alpha - E\big(B\alpha - \arctan(B\alpha)\big)\Big)\Big]
@@ -832,5 +832,49 @@ MPPI & 8.1424 & -0.6239 & 300 rollouts, $\lambda = 20$ \\
         longitudinal channel is governed by the same feedforward-plus-P
         throttle controller in every case, as opposed to being decided by the controller itself. It is debatable whether this is a better approach than just having each controller try to drive as quickly as it can with only a defined trajectory. This is worth further exploration when the trajectory planning algorithm is being implemented in the future.
 \end{itemize}
+
+\subsection{Dashboard Plots and Closing Thoughts}
+
+Each plot below is the final dashboard frame from a ten-lap simulation run.
+Top row: CTE, heading error, and velocity error vs the $1.5$\,m/\,s
+speed the car actually achieves at current safe-throttle settings.  Right column:
+the shared comparable cost (same weighting across all three controllers).
+Left column: track view (raceline dashed, car red, planned/preview
+trajectory blue) and current steering input.  The time-series x-axis is
+labelled by lap, so repeating per-lap features line up vertically across
+the four panels.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{../results/pid_final_plot.png}
+\caption{The closing frame of the PID dashboard after ten laps of the figure-eight.}
+\label{fig:pid-dash}
+\end{figure}
+
+% Commentary on the PID run:
+Although the PID plots look somewhat similar to the other runs, it should be noted that the repetitive spiking nature of the Comparable Cost plot on the right hand side shows that the car is being very reactive to errors and is not planning for upcoming turns. The car is consistently on the outside of the plotted raceline trajectory (evident from the final position of the car on the plot) and takes noticeably unoptimal paths through the difficult steering reversal in the center of the figure-eight.
+\newpage
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{../results/mppi_final_plot.png}
+\caption{The closing frame of the MPPI dashboard after ten laps of the figure-eight.}
+\label{fig:mppi-dash}
+\end{figure}
+
+% Commentary on the MPPI run:
+MPPI tended to have a generally low error throughout each lap, but would sometimes miss obvious, high reward input signals due to the stochastic nature of the algorithm, leading to the error spikes that can be seen during the run. This may be able to be remedied by a higher rollout count giving more opportunities for agreeable paths paired with a slightly lower horizon that will cut down on the noise introduced by the aforementioned additional rollouts.
+\newpage
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{../results/mpc_final_plot.png}
+\caption{The closing frame of the Nonlinear MPC dashboard after ten laps of the figure-eight.}
+\label{fig:mpc-dash}
+\end{figure}
+
+% Commentary on the MPC run:
+This MPC implementation is quite sensitive to sim-to-real discrepancies, leading to the oscillatory behavior displayed in the error plots above. Even so, the controller was able to beat PID with a relatively small amount of hand-tuning. Overall, this controller definitely has the most potential for incredibly accurate path tracking, particularly if the model is tuned with empirical measurements from the vehicle itself.
+
 
 \end{document}
