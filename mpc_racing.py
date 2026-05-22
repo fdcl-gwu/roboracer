@@ -39,6 +39,7 @@ from typing import Tuple
 import casadi as ca
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 import numpy as np
 import serial
 import vicon_tracker
@@ -105,7 +106,9 @@ VEL_ALPHA = 0.3
  
  
 # ── Live plot settings ────────────────────────────────────────────────────────
-PLOT_WINDOW = 200
+PLOT_V_REF  = 1.5  # m/s — speed the car actually reaches at safe-throttle settings;
+                   # used as the reference for the dashboard velocity error panel only.
+                   # Comparable cost still uses the raceline v_ref for cross-controller comparison.
  
  
 # ── CRC-16 / CCITT ───────────────────────────────────────────────────────────
@@ -536,32 +539,33 @@ class LivePlot:
         self.ax_head  = self.fig.add_subplot(gs[0, 1])
         self.ax_vel   = self.fig.add_subplot(gs[0, 2])
         self.ax_map   = self.fig.add_subplot(gs[1, :2])
-        self.ax_diag  = self.fig.add_subplot(gs[1:, 2])
+        self.ax_cost  = self.fig.add_subplot(gs[1:, 2])
         self.ax_steer = self.fig.add_subplot(gs[2, :2])
- 
-        self.t_buf        = []
-        self.cte_buf      = []
-        self.head_buf     = []
-        self.vel_buf      = []
-        self.solve_ms_buf = []
-        self.t0 = None
- 
+
+        self.lap_buf  = []
+        self.cte_buf  = []
+        self.head_buf = []
+        self.vel_buf  = []
+        self.cost_buf = []
+
+        # Time-series axes share a lap-based x-axis so repeating lap patterns line up.
+        self._timeseries_axes = (self.ax_cte, self.ax_head, self.ax_vel, self.ax_cost)
+        for ax in self._timeseries_axes:
+            ax.set_xlabel("lap", fontsize=8)
+            ax.xaxis.set_major_locator(MultipleLocator(1.0))
+            ax.tick_params(labelsize=7)
+
         # CTE
         self.ax_cte.set_title("CTE (m)", fontsize=9)
-        self.ax_cte.set_xlabel("t (s)", fontsize=8)
-        self.ax_cte.tick_params(labelsize=7)
         self.l_cte, = self.ax_cte.plot([], [], "r-", lw=1)
- 
+
         # Heading error
         self.ax_head.set_title("Heading Error (rad)", fontsize=9)
-        self.ax_head.set_xlabel("t (s)", fontsize=8)
-        self.ax_head.tick_params(labelsize=7)
         self.l_head, = self.ax_head.plot([], [], "g-", lw=1)
- 
-        # Velocity error
-        self.ax_vel.set_title("Velocity Error (m/s)", fontsize=9)
-        self.ax_vel.set_xlabel("t (s)", fontsize=8)
-        self.ax_vel.tick_params(labelsize=7)
+
+        # Velocity error vs PLOT_V_REF (m/s)
+        self.ax_vel.set_title(f"Velocity Error vs {PLOT_V_REF:.1f} m/s", fontsize=9)
+        self.ax_vel.axhline(0, color="gray", lw=0.5, ls="--")
         self.l_vel, = self.ax_vel.plot([], [], "b-", lw=1)
  
         # Map
@@ -576,18 +580,9 @@ class LivePlot:
         self.ax_map.legend(loc="upper right", fontsize=7)
         self.ax_map.tick_params(labelsize=7)
  
-        # Solver diagnostics — rolling solve time with 20 ms budget line
-        self.ax_diag.set_title("Solver Diagnostics", fontsize=9)
-        self.ax_diag.set_xlabel("t (s)", fontsize=8)
-        self.ax_diag.set_ylabel("solve time (ms)", fontsize=8)
-        self.ax_diag.axhline(20.0, color="red", lw=0.8, ls="--", label="20 ms budget")
-        self.ax_diag.legend(fontsize=7)
-        self.ax_diag.tick_params(labelsize=7)
-        self.l_diag, = self.ax_diag.plot([], [], "m-", lw=1)
-        self.diag_text = self.ax_diag.text(
-            0.98, 0.95, "", transform=self.ax_diag.transAxes,
-            ha="right", va="top", fontsize=7, family="monospace",
-        )
+        # Comparable cost (same basis as MPPI/PID for cross-controller comparison)
+        self.ax_cost.set_title("Comparable Cost", fontsize=9)
+        self.l_cost, = self.ax_cost.plot([], [], "m-", lw=1)
  
         # Steering indicator — a square marker sliding on a track bar
         self.ax_steer.set_title("Steering Input", fontsize=9)
@@ -607,56 +602,40 @@ class LivePlot:
  
     def update(
         self,
-        t_now: float,
+        lap_progress: float,
         cte: float,
         head_err: float,
-        vel_err: float,
+        v_est: float,
+        cost: float,
         state: VehicleState,
         planned_traj: np.ndarray,
         delta: float,
-        solver_info: dict,
     ) -> None:
-        if self.t0 is None:
-            self.t0 = t_now
-        t = t_now - self.t0
- 
-        self.t_buf.append(t)
+        self.lap_buf.append(lap_progress)
         self.cte_buf.append(abs(cte))
         self.head_buf.append(abs(head_err))
-        self.vel_buf.append(vel_err)
-        self.solve_ms_buf.append(solver_info['solve_ms'])
- 
-        if len(self.t_buf) > PLOT_WINDOW:
-            self.t_buf        = self.t_buf[-PLOT_WINDOW:]
-            self.cte_buf      = self.cte_buf[-PLOT_WINDOW:]
-            self.head_buf     = self.head_buf[-PLOT_WINDOW:]
-            self.vel_buf      = self.vel_buf[-PLOT_WINDOW:]
-            self.solve_ms_buf = self.solve_ms_buf[-PLOT_WINDOW:]
- 
-        ta = self.t_buf
- 
+        self.vel_buf.append(v_est - PLOT_V_REF)
+        self.cost_buf.append(cost)
+
+        ta = self.lap_buf
+
         self.l_cte.set_data(ta, self.cte_buf)
         self.ax_cte.relim(); self.ax_cte.autoscale_view()
- 
+
         self.l_head.set_data(ta, self.head_buf)
         self.ax_head.relim(); self.ax_head.autoscale_view()
- 
+
         self.l_vel.set_data(ta, self.vel_buf)
         self.ax_vel.relim(); self.ax_vel.autoscale_view()
- 
-        self.l_diag.set_data(ta, self.solve_ms_buf)
-        self.ax_diag.relim(); self.ax_diag.autoscale_view()
-        self.diag_text.set_text(
-            f"status={solver_info['status']}  qp_iter={solver_info['qp_iter']}\n"
-            f"primal_res={solver_info['primal_res']:.2e}\n"
-            f"cost={solver_info['cost']:.1f}"
-        )
- 
+
+        self.l_cost.set_data(ta, self.cost_buf)
+        self.ax_cost.relim(); self.ax_cost.autoscale_view()
+
         self.l_car.set_data([state.x], [state.y])
         self.l_traj.set_data(planned_traj[:, 0], planned_traj[:, 1])
- 
+
         self.l_steer.set_data([delta], [0])
- 
+
         self.fig.canvas.flush_events()
         self.fig.canvas.draw_idle()
  
@@ -848,8 +827,9 @@ def main() -> None:
  
             # ── Visualization ─────────────────────────────────────────────────
             if t_now - last_plot_t >= 0.1:  # update at ~10 Hz
-                live.update(t_now, cte, heading_err, vel_err,
-                            state, planned_traj, control.delta, solver_info)
+                lap_progress = laps_completed + closest_index / n_pts
+                live.update(lap_progress, cte, heading_err, v_est, comparable_cost,
+                            state, planned_traj, control.delta)
                 last_plot_t = t_now
  
             # ── Deadline-based loop rate ──────────────────────────────────────

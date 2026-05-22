@@ -32,6 +32,7 @@ from typing import Tuple
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 import numpy as np
 import serial
 import vicon_tracker
@@ -87,7 +88,9 @@ VEL_ALPHA = 0.3   # blend fraction for new measurement; lower = smoother
  
  
 # ── Live plot settings ────────────────────────────────────────────────────────
-PLOT_WINDOW = 200  # rolling sample count for time-series axes
+PLOT_V_REF  = 1.5  # m/s — speed the car actually reaches at safe-throttle settings;
+                   # used as the reference for the dashboard velocity error panel only.
+                   # Comparable cost still uses the raceline v_ref for cross-controller comparison.
  
  
 # ── CRC-16 / CCITT ───────────────────────────────────────────────────────────
@@ -341,29 +344,30 @@ class LivePlot:
         self.ax_cost  = self.fig.add_subplot(gs[1:, 2])
         self.ax_steer = self.fig.add_subplot(gs[2, :2])
  
-        self.t_buf    = []
+        self.lap_buf  = []
         self.cte_buf  = []
         self.head_buf = []
         self.vel_buf  = []
         self.cost_buf = []
-        self.t0 = None
- 
+
+        # Time-series axes share a lap-based x-axis so repeating lap patterns line up.
+        self._timeseries_axes = (self.ax_cte, self.ax_head, self.ax_vel, self.ax_cost)
+        for ax in self._timeseries_axes:
+            ax.set_xlabel("lap", fontsize=8)
+            ax.xaxis.set_major_locator(MultipleLocator(1.0))
+            ax.tick_params(labelsize=7)
+
         # CTE
         self.ax_cte.set_title("CTE (m)", fontsize=9)
-        self.ax_cte.set_xlabel("t (s)", fontsize=8)
-        self.ax_cte.tick_params(labelsize=7)
         self.l_cte, = self.ax_cte.plot([], [], "r-", lw=1)
- 
+
         # Heading error
         self.ax_head.set_title("Heading Error (rad)", fontsize=9)
-        self.ax_head.set_xlabel("t (s)", fontsize=8)
-        self.ax_head.tick_params(labelsize=7)
         self.l_head, = self.ax_head.plot([], [], "g-", lw=1)
- 
-        # Velocity error
-        self.ax_vel.set_title("Velocity Error (m/s)", fontsize=9)
-        self.ax_vel.set_xlabel("t (s)", fontsize=8)
-        self.ax_vel.tick_params(labelsize=7)
+
+        # Velocity error vs PLOT_V_REF (m/s)
+        self.ax_vel.set_title(f"Velocity Error vs {PLOT_V_REF:.1f} m/s", fontsize=9)
+        self.ax_vel.axhline(0, color="gray", lw=0.5, ls="--")
         self.l_vel, = self.ax_vel.plot([], [], "b-", lw=1)
  
         # Map
@@ -380,8 +384,6 @@ class LivePlot:
  
         # Comparable cost (same basis as MPC/PID for cross-controller comparison)
         self.ax_cost.set_title("Comparable Cost", fontsize=9)
-        self.ax_cost.set_xlabel("t (s)", fontsize=8)
-        self.ax_cost.tick_params(labelsize=7)
         self.l_cost, = self.ax_cost.plot([], [], "m-", lw=1)
  
         # Steering indicator — a square marker sliding on a track bar
@@ -402,33 +404,22 @@ class LivePlot:
  
     def update(
         self,
-        t_now: float,
+        lap_progress: float,
         cte: float,
         head_err: float,
-        vel_err: float,
+        v_est: float,
         cost: float,
         state: VehicleState,
         planned_traj: np.ndarray,
         delta: float,
     ) -> None:
-        if self.t0 is None:
-            self.t0 = t_now
-        t = t_now - self.t0
- 
-        self.t_buf.append(t)
+        self.lap_buf.append(lap_progress)
         self.cte_buf.append(abs(cte))
         self.head_buf.append(abs(head_err))
-        self.vel_buf.append(vel_err)
+        self.vel_buf.append(v_est - PLOT_V_REF)
         self.cost_buf.append(cost)
- 
-        if len(self.t_buf) > PLOT_WINDOW:
-            self.t_buf    = self.t_buf[-PLOT_WINDOW:]
-            self.cte_buf  = self.cte_buf[-PLOT_WINDOW:]
-            self.head_buf = self.head_buf[-PLOT_WINDOW:]
-            self.vel_buf  = self.vel_buf[-PLOT_WINDOW:]
-            self.cost_buf = self.cost_buf[-PLOT_WINDOW:]
- 
-        ta = self.t_buf
+
+        ta = self.lap_buf
  
         self.l_cte.set_data(ta, self.cte_buf)
         self.ax_cte.relim(); self.ax_cte.autoscale_view()
@@ -626,7 +617,8 @@ def main() -> None:
             time.sleep(0.025)  # ~40 Hz
  
             if t_now - last_plot_t >= 0.1:  # update visualization at ~10 Hz
-                live.update(t_now, cte, heading_err, vel_err, comparable_cost,
+                lap_progress = laps_completed + closest_index / n_pts
+                live.update(lap_progress, cte, heading_err, v_est, comparable_cost,
                             state, planned_traj, control.delta)
                 last_plot_t = t_now
  

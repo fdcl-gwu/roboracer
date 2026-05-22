@@ -49,6 +49,7 @@ import os
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 import numpy as np
 import serial
 import vicon_tracker
@@ -122,7 +123,9 @@ PREVIEW_HORIZON   = 20      # steps to forward-simulate for the map preview arc
 PREVIEW_DT        = 0.025   # s — matches the main loop period
 RACELINE_X_OFFSET = 0.0
 VEL_ALPHA         = 0.3     # EMA blend for velocity estimate; lower = smoother
-PLOT_WINDOW       = 200     # rolling sample count for time-series axes
+PLOT_V_REF        = 1.5     # m/s — speed the car actually reaches at safe-throttle settings;
+                            # used as the reference for the dashboard velocity error panel only.
+                            # Comparable cost still uses the raceline v_ref for cross-controller comparison.
 
 
 # ── CRC-16 / CCITT ───────────────────────────────────────────────────────────
@@ -324,37 +327,34 @@ class LivePlot:
         self.ax_head  = self.fig.add_subplot(gs[0, 1])
         self.ax_vel   = self.fig.add_subplot(gs[0, 2])
         self.ax_map   = self.fig.add_subplot(gs[1, :2])
-        self.ax_pid   = self.fig.add_subplot(gs[1:, 2])   # steering breakdown (replaces MPPI cost)
+        self.ax_cost  = self.fig.add_subplot(gs[1:, 2])
         self.ax_steer = self.fig.add_subplot(gs[2, :2])
 
-        self.t_buf    = []
+        self.lap_buf  = []
         self.cte_buf  = []
         self.head_buf = []
+        self.vel_buf  = []
         self.cost_buf = []
-        self.ph_buf   = []
-        self.pc_buf   = []
-        self.dc_buf   = []
-        self.ic_buf   = []
-        self.d_buf    = []
-        self.t0       = None
+
+        # Time-series axes share a lap-based x-axis so repeating lap patterns line up.
+        self._timeseries_axes = (self.ax_cte, self.ax_head, self.ax_vel, self.ax_cost)
+        for ax in self._timeseries_axes:
+            ax.set_xlabel("lap", fontsize=8)
+            ax.xaxis.set_major_locator(MultipleLocator(1.0))
+            ax.tick_params(labelsize=7)
 
         # CTE
         self.ax_cte.set_title("CTE (m)", fontsize=9)
-        self.ax_cte.set_xlabel("t (s)", fontsize=8)
-        self.ax_cte.tick_params(labelsize=7)
         self.l_cte, = self.ax_cte.plot([], [], "r-", lw=1)
 
         # Heading error
         self.ax_head.set_title("Heading Error (rad)", fontsize=9)
-        self.ax_head.set_xlabel("t (s)", fontsize=8)
-        self.ax_head.tick_params(labelsize=7)
         self.l_head, = self.ax_head.plot([], [], "g-", lw=1)
 
-        # Comparable cost (same basis as MPPI/MPC for cross-controller comparison)
-        self.ax_vel.set_title("Comparable Cost", fontsize=9)
-        self.ax_vel.set_xlabel("t (s)", fontsize=8)
-        self.ax_vel.tick_params(labelsize=7)
-        self.l_cost, = self.ax_vel.plot([], [], "b-", lw=1)
+        # Velocity error vs PLOT_V_REF (m/s)
+        self.ax_vel.set_title(f"Velocity Error vs {PLOT_V_REF:.1f} m/s", fontsize=9)
+        self.ax_vel.axhline(0, color="gray", lw=0.5, ls="--")
+        self.l_vel, = self.ax_vel.plot([], [], "b-", lw=1)
 
         # Map
         self.ax_map.set_title("Track View", fontsize=9)
@@ -368,20 +368,9 @@ class LivePlot:
         self.ax_map.legend(loc="upper right", fontsize=7)
         self.ax_map.tick_params(labelsize=7)
 
-        # PID steering breakdown — the most useful tuning view.
-        # Green = heading P, Blue = CTE P, Red = CTE D, Magenta = CTE I, Black = total δ.
-        # Goal: green and blue should dominate; red should be small and quiet;
-        #       magenta should be near zero (only grows if there is persistent drift).
-        self.ax_pid.set_title("Steering Breakdown (rad)", fontsize=9)
-        self.ax_pid.set_xlabel("t (s)", fontsize=8)
-        self.ax_pid.tick_params(labelsize=7)
-        self.ax_pid.axhline(0, color="gray", lw=0.5, ls="--")
-        self.l_ph,   = self.ax_pid.plot([], [], "g-", lw=1,   label="P heading")
-        self.l_pc,   = self.ax_pid.plot([], [], "b-", lw=1,   label="P cte")
-        self.l_dc,   = self.ax_pid.plot([], [], "r-", lw=1,   label="D cte")
-        self.l_ic,   = self.ax_pid.plot([], [], "m-", lw=1,   label="I cte")
-        self.l_dtot, = self.ax_pid.plot([], [], "k-", lw=1.5, label="δ total")
-        self.ax_pid.legend(loc="upper right", fontsize=6)
+        # Comparable cost (same basis as MPPI/MPC for cross-controller comparison)
+        self.ax_cost.set_title("Comparable Cost", fontsize=9)
+        self.l_cost, = self.ax_cost.plot([], [], "m-", lw=1)
 
         # Steering indicator
         self.ax_steer.set_title("Steering Input", fontsize=9)
@@ -401,42 +390,22 @@ class LivePlot:
 
     def update(
         self,
-        t_now: float,
+        lap_progress: float,
         cte: float,
         head_err: float,
+        v_est: float,
         comparable_cost: float,
         state: VehicleState,
         preview_traj: np.ndarray,
         delta: float,
-        pid_terms: Tuple[float, float, float, float],
     ) -> None:
-        if self.t0 is None:
-            self.t0 = t_now
-        t = t_now - self.t0
-        p_h, p_cte, d_cte, i_cte = pid_terms
-
-        self.t_buf.append(t)
+        self.lap_buf.append(lap_progress)
         self.cte_buf.append(abs(cte))
         self.head_buf.append(abs(head_err))
+        self.vel_buf.append(v_est - PLOT_V_REF)
         self.cost_buf.append(comparable_cost)
-        self.ph_buf.append(p_h)
-        self.pc_buf.append(p_cte)
-        self.dc_buf.append(d_cte)
-        self.ic_buf.append(i_cte)
-        self.d_buf.append(delta)
 
-        if len(self.t_buf) > PLOT_WINDOW:
-            self.t_buf    = self.t_buf[-PLOT_WINDOW:]
-            self.cte_buf  = self.cte_buf[-PLOT_WINDOW:]
-            self.head_buf = self.head_buf[-PLOT_WINDOW:]
-            self.cost_buf = self.cost_buf[-PLOT_WINDOW:]
-            self.ph_buf   = self.ph_buf[-PLOT_WINDOW:]
-            self.pc_buf   = self.pc_buf[-PLOT_WINDOW:]
-            self.dc_buf   = self.dc_buf[-PLOT_WINDOW:]
-            self.ic_buf   = self.ic_buf[-PLOT_WINDOW:]
-            self.d_buf    = self.d_buf[-PLOT_WINDOW:]
-
-        ta = self.t_buf
+        ta = self.lap_buf
 
         self.l_cte.set_data(ta, self.cte_buf)
         self.ax_cte.relim(); self.ax_cte.autoscale_view()
@@ -444,18 +413,14 @@ class LivePlot:
         self.l_head.set_data(ta, self.head_buf)
         self.ax_head.relim(); self.ax_head.autoscale_view()
 
-        self.l_cost.set_data(ta, self.cost_buf)
+        self.l_vel.set_data(ta, self.vel_buf)
         self.ax_vel.relim(); self.ax_vel.autoscale_view()
+
+        self.l_cost.set_data(ta, self.cost_buf)
+        self.ax_cost.relim(); self.ax_cost.autoscale_view()
 
         self.l_car.set_data([state.x], [state.y])
         self.l_traj.set_data(preview_traj[:, 0], preview_traj[:, 1])
-
-        self.l_ph.set_data(ta, self.ph_buf)
-        self.l_pc.set_data(ta, self.pc_buf)
-        self.l_dc.set_data(ta, self.dc_buf)
-        self.l_ic.set_data(ta, self.ic_buf)
-        self.l_dtot.set_data(ta, self.d_buf)
-        self.ax_pid.relim(); self.ax_pid.autoscale_view()
 
         self.l_steer.set_data([delta], [0])
 
@@ -600,7 +565,7 @@ def main() -> None:
             prev_closest_index = closest_index
 
             # ── PID step ──────────────────────────────────────────────────────
-            control, pid_state, preview_traj, pid_terms = pid_step(
+            control, pid_state, preview_traj, _ = pid_step(
                 state, raceline, closest_index, pid_state, dt_pid,
             )
 
@@ -646,8 +611,9 @@ def main() -> None:
             time.sleep(0.025)  # ~40 Hz
 
             if t_now - last_plot_t >= 0.1:
-                live.update(t_now, cte, heading_err, comparable_cost,
-                            state, preview_traj, control.delta, pid_terms)
+                lap_progress = laps_completed + closest_index / n_pts
+                live.update(lap_progress, cte, heading_err, v_est, comparable_cost,
+                            state, preview_traj, control.delta)
                 last_plot_t = t_now
 
     except KeyboardInterrupt:
